@@ -1,0 +1,16 @@
+{
+  "name": "line-chat-bot",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "vars": { "DAILY_AI_LIMIT": "300", "SEARCH_MONTHLY_LIMIT": "900" },
+  "ai": { "binding": "AI" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "line-chat-db",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+    }
+  ],
+  "triggers": { "crons": ["0 16 * * *"] },
+  "observability": { "enabled": false }
+}

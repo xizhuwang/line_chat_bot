@@ -1,0 +1,19 @@
+{
+  "name": "line-chat-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 execute line-chat-db --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "4.147.0"
+  },
+  "description": "LINE group assistant with summaries, discussion scoring, source checks and weather forecasts",
+  "engines": {
+    "node": ">=24"
+  }
+}

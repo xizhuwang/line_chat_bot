@@ -1,0 +1,7 @@
+# Local development only. Copy to .dev.vars and supply your own values.
+# Never commit .dev.vars. Production values belong in Worker Secrets.
+LINE_CHANNEL_SECRET=
+LINE_CHANNEL_ACCESS_TOKEN=
+ADMIN_USER_IDS=
+# Optional: only required for web source checks, not weather forecasts.
+TAVILY_API_KEY=
