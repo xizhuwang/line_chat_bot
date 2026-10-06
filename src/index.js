@@ -181,7 +181,7 @@ async function handleEvent(event, env, ctx, destination) {
     else if (!await groupEnabled(env.DB, groupId)) replyLater(ctx, env, token, "本群組尚未啟用，請由管理員輸入 /啟用。");
     else {
       if (userId) await saveMessage(env.DB, groupId, userId, event);
-      const {results: turns}=userId ? await env.DB.prepare("SELECT message_id,question,answer FROM bot_turns WHERE group_id=? AND user_id=? AND ts>=? ORDER BY ts DESC,message_id DESC LIMIT 4")
+      const {results: turns}=userId ? await env.DB.prepare("SELECT message_id,ts,question,answer FROM bot_turns WHERE group_id=? AND user_id=? AND ts>=? ORDER BY ts DESC,message_id DESC LIMIT 4")
         .bind(groupId,userId,seconds()-3600).all() : {results:[]};
       if(toneFeedback(question) && requestedSearch(question)===null) {
         const text=conversationalReply('',{reply_intent:'tone_feedback'});
@@ -279,7 +279,7 @@ async function debateAndReply(env, groupId, question, token, requestMessageId, u
     const memberNames=new Map([...allCodes].map(([id,code])=>[id,labels.get(code)]));
     const input = conversationalInput(question, rows,memberNames);
     const { results: candidateTurns } = loadedTurns ? {results:loadedTurns} : userId && ['conversation','term_definition','response_feedback'].includes(input.reply_intent)
-      ? await env.DB.prepare("SELECT message_id,question,answer FROM bot_turns WHERE group_id=? AND user_id=? AND ts>=? ORDER BY ts DESC,message_id DESC LIMIT 4")
+      ? await env.DB.prepare("SELECT message_id,ts,question,answer FROM bot_turns WHERE group_id=? AND user_id=? AND ts>=? ORDER BY ts DESC,message_id DESC LIMIT 4")
         .bind(groupId, userId, seconds() - 3600).all() : {results: []};
     const previousTurns = prepareConversationMemory(input, candidateTurns);
     const text = await within(generate(env, input.topic_hint === 'engineering' ? ENGINEERING_SYSTEM : conversationSystem(input),

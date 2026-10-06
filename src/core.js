@@ -157,8 +157,6 @@ export function banterIntent(question) {
 }
 
 export function directConversationReply(question) {
-  const address=question.trim().match(/^(?:請)?(?:幫我)?(?:叫|喊)\s*([^\n，。!?！？]{1,30}?)\s*一(?:聲|句)\s*[「『“"]?([^\n「」『』“”"，。!?！？]{1,16})[」』”"]?[。！!\s]*$/u);
-  if(address) return `${address[1].trim()}，${address[2].trim()}。`;
   if(/^(?:閉嘴|你閉嘴|先閉嘴|安靜)[！!。\s]*$/u.test(question)) return '好，先安靜。再標註我才回。';
   if(!/(?:拉|邀|加).{0,8}(?:群|進來)/u.test(question) && /(?:誰|哪個).{0,12}(?:訓練|教壞)你|你.{0,6}(?:從哪來|哪裡來|是誰)|where (?:do )?you come from/iu.test(question))
     return '我是跑在 Cloudflare 的 LINE Bot，用 Qwen 模型加上群聊設定回覆；群友沒有把我重新訓練過。嘴歪了是我沒接好，不是誰用 DOS 教我的啦。';
@@ -212,6 +210,7 @@ export function prepareConversationMemory(input, candidates) {
   input.profanity_budget = input.tone_mode==='restrained' || candidates.slice(0,2).some(turn=>/(?:^|[，。！!?？\s])(?:幹|靠北|靠杯)[，。！!?？\s]/u.test(turn.answer)) ? 0 : ['banter','roast'].includes(input.reply_intent) ? 1 : 0;
   const turns = selectBotTurns(input, candidates).filter(turn=>!(/民調/u.test(memoryTopic(turn)||requestedSearch(turn.question)||'') && !currentLookupMemory(turn)));
   input.recent_bot_turns = turns.slice().reverse().map(turn=>({question:turn.question,answer:turn.answer}));
+  input.bot_turn_priorities = turns.slice().reverse().map(turn=>contextPriority(turn.ts, input.context_time));
   input.repeated_question_count = turns.filter(turn=>
     replyFingerprint(turn.question)===replyFingerprint(input.question) || (isAicDefinition(input.question)&&isAicDefinition(turn.question))).length;
   if (input.reply_intent === 'response_feedback' && turns.some(turn=>/\bAIC\b/i.test(turn.question))) {
@@ -257,7 +256,31 @@ export function selectBotTurns(input, turns) {
   return [];
 }
 
-export function conversationalInput(question, rows, memberNames=new Map()) {
+// Decay is applied before the prompt budget, so a long old topic cannot crowd out a new one.
+function contextPriority(ts, now=Math.floor(Date.now()/1000)) {
+  const valid=Number.isFinite(ts) && ts>0 && ts<=now+60;
+  const minutes=valid ? Math.max(0,(now-ts)/60) : 360;
+  return {age_minutes:Math.round(minutes),time_weight:Number((2**(-minutes/30)).toFixed(4))};
+}
+
+function weightedDiscussion(question, rows, now, target, targetUser) {
+  const ignored=new Set(['你是','你很','什麼','幹嘛','怎麼','為什','一聲','一句','幫我','請問','叫我','知道','一下']);
+  const phrases=[...question.matchAll(/[\p{Script=Han}]{2,}/gu)].flatMap(([s])=>Array.from({length:s.length-1},(_,i)=>s.slice(i,i+2))).filter(p=>!ignored.has(p));
+  const words=question.match(/[A-Za-z][A-Za-z0-9_-]{1,}/g)||[];
+  const seen=new Set();
+  return rows.slice().sort((a,b)=>b.ts-a.ts).flatMap(row=>{
+    const key=JSON.stringify([row.user_id,row.text.trim()]);
+    if(seen.has(key))return []; seen.add(key);
+    const priority=contextPriority(row.ts,now);
+    const match=phrases.some(p=>row.text.includes(p)) || words.some(w=>new RegExp(`\\b${w}\\b`,'i').test(row.text));
+    const targetMatch=Boolean((target && row.text.includes(target)) || (targetUser && row.user_id===targetUser));
+    const relevance=targetMatch?0.35:match?0.2:0;
+    const weight=Number((priority.time_weight+relevance).toFixed(4));
+    return weight>=0.04 ? [{row,...priority,relevance:targetMatch?'指定人物':match?'明確接題':'近期氣氛',weight}] : [];
+  }).sort((a,b)=>b.weight-a.weight || b.row.ts-a.row.ts).slice(0,18).sort((a,b)=>a.row.ts-b.row.ts);
+}
+
+export function conversationalInput(question, rows, memberNames=new Map(), now=Math.floor(Date.now()/1000)) {
   // A request addressed to the bot is not evidence that its subject experienced an event.
   const chat = rows.filter(row => !/^\s*\//u.test(row.text) && !botDirectedText(row.text));
   const cheer = question.match(/^(?:請)?(?:幫|替)(.{1,20}?)(?:加油|打氣|鼓勵)/u);
@@ -267,22 +290,27 @@ export function conversationalInput(question, rows, memberNames=new Map()) {
   const termCorrection = /(?:^|[，,])(?:是|我說的是|我是指|我指的是|這裡指的是)\s*類比\s*IC[。!！?？\s]*$/iu.test(question);
   const responseFeedback = /你(?:怎麼|為什麼|幹嘛).{0,12}(?:重複|跳針|罐頭)|你.{0,8}(?:一直|又|老是).{0,8}(?:重複|跳針)|(?:不要|別|停止).{0,8}(?:重複|跳針|罐頭)|(?:回覆|回答|內容).{0,8}(?:一樣|重複|罐頭)/u.test(question);
   const award=question.match(/(?:頒(?:發)?|送)(?:個|一張)?(?:獎狀|獎牌)(?:給|予)(.{1,20}?)[！!。\s]*$/u);
+  const address=question.trim().match(/^(?:請)?(?:幫我)?(?:叫|喊)\s*([^\n，。!?！？]{1,30}?)\s*一(?:聲|句)\s*[「『“"]?([^\n「」『』“”"，。!?！？]{1,16})[」』”"]?[。！!\s]*$/u);
   const knownMember=[...memberNames].find(([,name])=>[name,...name.split(/\s+/u)].some(alias=>alias.length>=2 && question.includes(alias)));
   const personMatch=question.match(/^(?:請問)?(.{2,20}?)(?:在(?:幹嘛|做什麼)|(?:說|講|貼)什麼|怎麼了)/u);
   const personQuestion=Boolean(personMatch);
-  const target = (cheer?.[1] || overtime?.[1] || roast?.[1] || award?.[1] || (personQuestion?knownMember?.[1] || personMatch[1]:'') || '').trim();
-  const intent = toneFeedback(question) ? 'tone_feedback' : responseFeedback ? 'response_feedback' : award ? 'award' : personQuestion ? 'person_explanation' : cheer ? 'encouragement' : overtime ? 'unknown_overtime_reason' : roast ? 'roast' : demonstration ? 'demonstration' : termCorrection ? 'term_correction' : isAicDefinition(question) ? 'term_definition' : banterIntent(question) ? 'banter' : 'conversation';
+  const target = (address?.[1] || cheer?.[1] || overtime?.[1] || roast?.[1] || award?.[1] || (personQuestion?knownMember?.[1] || personMatch[1]:'') || '').trim();
+  const intent = toneFeedback(question) ? 'tone_feedback' : responseFeedback ? 'response_feedback' : address ? 'playful_address' : award ? 'award' : personQuestion ? 'person_explanation' : cheer ? 'encouragement' : overtime ? 'unknown_overtime_reason' : roast ? 'roast' : demonstration ? 'demonstration' : termCorrection ? 'term_correction' : isAicDefinition(question) ? 'term_definition' : banterIntent(question) ? 'banter' : 'conversation';
   const technical = engineeringTopic(question);
-  const related = intent==='banter' ? [] : personQuestion ? chat.filter(row=>(knownMember && row.user_id===knownMember[0]) || row.text.includes(target)) : target && !award ? chat.filter(row => row.text.includes(target)) : demonstration || termCorrection ? [] : technical ? chat.filter(row => engineeringTopic(row.text)) : chat;
-  const codes = pseudonyms(related);
+  const related = personQuestion ? chat.filter(row=>(knownMember && row.user_id===knownMember[0]) || row.text.includes(target)) : target && !award && !address ? chat.filter(row => row.text.includes(target)) : demonstration || termCorrection ? [] : technical ? chat.filter(row => engineeringTopic(row.text)) : chat;
+  const weighted=weightedDiscussion(question,related,now,target,personQuestion?knownMember?.[0]:null);
+  const selected=weighted.map(item=>item.row);
+  const codes = pseudonyms(selected);
   const repeats=new Map();
-  for(const row of related){const key=JSON.stringify([row.user_id,row.text.trim()]);const entry=repeats.get(key)||{author:codes.get(row.user_id),text:row.text.slice(0,140),count:0};entry.count++;repeats.set(key,entry);}
+  for(const row of related){if(!codes.has(row.user_id))continue;const key=JSON.stringify([row.user_id,row.text.trim()]);const entry=repeats.get(key)||{author:codes.get(row.user_id),text:row.text.slice(0,140),count:0};entry.count++;repeats.set(key,entry);}
   return { question, reply_intent: intent, topic_hint: technical ? 'engineering' : 'general', target_name: target || null,
+    requested_address:address?.[2]?.trim() || null, context_time:now,
+    context_priorities:weighted.map(({row,...priority})=>({author:codes.get(row.user_id),text:row.text.slice(0,400),...priority})),
     target_kind:personQuestion?knownMember?'group_member':'unknown_person':null,
     participants:[...codes].map(([id,code])=>({code,name:memberNames.get(id) || null})),
     repeated_messages:[...repeats.values()].filter(entry=>entry.count>=2).slice(-5),
-    term_definitions: /\bAIC\b/i.test(question) || termCorrection ? {AIC:'類比 IC（Analog IC）'} : {}, recent_discussion: discussionContext(related,10000,codes),
-    recent_atmosphere: discussionContext(related.filter(row=>row.ts>=Math.floor(Date.now()/1000)-20*60).slice(-12),3000,codes) };
+    term_definitions: /\bAIC\b/i.test(question) || termCorrection ? {AIC:'類比 IC（Analog IC）'} : {}, recent_discussion: discussionContext(selected,8000,codes),
+    recent_atmosphere: discussionContext(selected.filter(row=>row.ts>=now-20*60).slice(-12),3000,codes) };
 }
 
 function differentReply(options, past) {

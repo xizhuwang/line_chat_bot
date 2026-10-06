@@ -54,11 +54,12 @@ test("打氣不得新增道歉或酸民故事，不能承諾代替聯絡人", ()
 });
 
 test("不同人物各自選取背景，Bot 要求不冒充人物事實", () => {
+  const now=Math.floor(Date.now()/1000);
   const rows=[
-    {user_id:'a',ts:1,text:'成員乙還在加班。'},
-    {user_id:'b',ts:2,text:'@AI群聊助手 幫成員甲加油打氣一下'},
-    {user_id:'a',ts:3,text:'@AI群聊助手 幫成員丙加油打氣一下'},
-    {user_id:'b',ts:4,text:'成員甲剛剛在討論票價。'},
+    {user_id:'a',ts:now-4,text:'成員乙還在加班。'},
+    {user_id:'b',ts:now-3,text:'@AI群聊助手 幫成員甲加油打氣一下'},
+    {user_id:'a',ts:now-2,text:'@AI群聊助手 幫成員丙加油打氣一下'},
+    {user_id:'b',ts:now-1,text:'成員甲剛剛在討論票價。'},
   ];
   const cheer=conversationalInput('幫成員丙加油打氣一下',rows);
   assert.equal(cheer.reply_intent,'encouragement');

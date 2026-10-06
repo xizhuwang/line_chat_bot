@@ -50,7 +50,7 @@ test('Bot提問不湊戰力門檻；缺分数與重複participant不偽裝完整
 });
 
 test('獎狀指定跳針哥，重貼計數不因背景去重而消失',()=>{
- const rows=[1,2].map(i=>({message_id:'m'+i,user_id:'a',ts:i,text:'我再貼一次活动名單。'}));const input=conversationalInput('請頒發獎狀給跳針哥',rows,new Map([['a','成員甲']]));
+ const rows=[1,2].map(i=>({message_id:'m'+i,user_id:'a',ts:Math.floor(Date.now()/1000)-i,text:'我再貼一次活动名單。'}));const input=conversationalInput('請頒發獎狀給跳針哥',rows,new Map([['a','成員甲']]));
  assert.equal(input.reply_intent,'award');assert.equal(input.target_name,'跳針哥');assert.equal(input.repeated_messages[0].count,2);assert.ok(!JSON.stringify(input).includes('user_id'));
 });
 
@@ -60,14 +60,44 @@ test('真實模型漏評案例：外部證據零分，聊天原句ID仍可核對
  assert.equal(result.length,1);assert.equal(result[0].scores.evidence,0);assert.deepEqual(result[0].proof,['m1']);
 });
 
-test('叫指定人物一聲弟弟只完成原句，不加群組角色或評論',()=>{
- assert.equal(directConversationReply('叫成員甲一聲弟弟'),'成員甲，弟弟。');
- assert.equal(directConversationReply('請幫我喊 John 一句「大哥」！'),'John，大哥。');
+test('稱呼指令交給模型，可保留貼題加戲而非固定模板',()=>{
+ assert.equal(directConversationReply('叫成員甲一聲弟弟'),null);
+ const input=conversationalInput('請幫我喊 John 一句「大哥」！',[]);
+ assert.equal(input.reply_intent,'playful_address');assert.equal(input.target_name,'John');assert.equal(input.requested_address,'大哥');
+ assert.equal(conversationalReply('John，大哥！這聲先欠著，宵夜你請 😎',input),'John，大哥！這聲先欠著，宵夜你請 😎');
  assert.equal(directConversationReply('叫成員甲別亂貼名單'),null);
 });
 
-test('純互嗆不讀六小時公開議題與工程背景，也不沿用前次民調答案',()=>{
- const input=conversationalInput('你很屌',[{user_id:'a',message_id:'a',ts:Math.floor(Date.now()/1000),text:'今天貼了候選人名單，還聊船員。'}]);
+test('純互嗆可讀近期氣氛，過時無關背景與舊民調答案不帶入',()=>{
+ const now=Math.floor(Date.now()/1000);
+ const input=conversationalInput('你很屌',[{user_id:'a',ts:now-4*3600,text:'今天貼了候選人名單，還聊船員。'},{user_id:'b',ts:now-60,text:'宵夜吃太多，明天要跑步了。'}]);
  prepareConversationMemory(input,[{question:'查證台北選舉民調',answer:'🔎 民調資料整理｜某候選人的支持度。'}]);
- assert.equal(input.recent_discussion,'');assert.equal(input.recent_atmosphere,'');assert.deepEqual(input.recent_bot_turns,[]);
+ assert.match(input.recent_discussion,/宵夜/);assert.match(input.recent_atmosphere,/跑步/);assert.ok(!/候選人|船員/u.test(input.recent_discussion));assert.deepEqual(input.recent_bot_turns,[]);
+});
+
+test('新話題權重高於大量舊話題，去重後不靠重貼堆權重',()=>{
+ const now=1800000000;
+ const rows=Array.from({length:30},(_,i)=>({user_id:'a',ts:now-3600-i,text:'午餐選項'+i}));
+ rows.push({user_id:'b',ts:now-60,text:'晚餐要吃拉麵嗎'}, {user_id:'b',ts:now-30,text:'晚餐要吃拉麵嗎'});
+ const input=conversationalInput('你很屌',rows,new Map(),now);
+ assert.match(input.recent_discussion,/晚餐/);assert.equal(input.context_priorities.filter(p=>p.text==='晚餐要吃拉麵嗎').length,1);
+ const latest=input.context_priorities.find(p=>p.text.includes('晚餐'));
+ assert.ok(latest.weight>input.context_priorities.find(p=>p.text.includes('午餐')).weight*3);
+ assert.equal(input.context_priorities.length,18);
+ assert.ok(!JSON.stringify(input).includes('user_id'));
+});
+
+test('明確接續較舊梗可取回，但仍低於同題的新原話',()=>{
+ const now=1800000000;
+ const input=conversationalInput('洋流船長要怎麼駛舵？',[{user_id:'a',ts:now-3*3600,text:'洋流船長今天負責點餐'},{user_id:'b',ts:now-60,text:'洋流船長現在負責拿外送'},{user_id:'c',ts:now-4*3600,text:'某候選人的民調支持度'}],new Map(),now);
+ assert.match(input.recent_discussion,/點餐/);assert.match(input.recent_discussion,/拿外送/);assert.ok(!input.recent_discussion.includes('民調'));
+ assert.ok(input.context_priorities[1].weight>input.context_priorities[0].weight);
+});
+
+test('未來或缺失時間不冒充最新氣氛，Bot問答也帶時間衰減',()=>{
+ const now=1800000000;
+ const input=conversationalInput('你想當船長還是船員',[{user_id:'a',ts:now+3600,text:'午餐菜單'},{user_id:'b',text:'早餐菜單'}],new Map(),now);
+ assert.equal(input.recent_discussion,'');
+ prepareConversationMemory(input,[{ts:now-60,question:'船長？',answer:'我負責外送'},{ts:now-1800,question:'船員？',answer:'我負責點餐'}]);
+ assert.equal(input.bot_turn_priorities[0].time_weight,0.5);assert.ok(input.bot_turn_priorities[1].time_weight>0.9);
 });
