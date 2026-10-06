@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
 import {weatherRequest} from '../src/weather.js';
+import {lookupMemoryQuestion} from '../src/core.js';
 
 globalThis.crypto ||= webcrypto;
 
@@ -257,7 +258,7 @@ test('台北市新聞不反問使用者，直接查相關近期來源並短句�
 
 test('現在是兩人誰會贏承接民調，不誤判更正、不重搜且保留自然比喻',async()=>{
   const result=await deliver({text:'/AI 現在是成員丁跟成員丙誰會贏?',tavilyKey:'test-key',
-    botTurns:[{question:'查證台北選舉民調',answer:'🔎 民調資料整理｜找到的是評論轉述，調查日期或方法沒附完整。'}],
+    botTurns:[{question:lookupMemoryQuestion('查證台北選舉民調','台北選舉民調'),answer:'🔎 民調資料整理｜找到的是評論轉述，調查日期或方法沒附完整。'}],
     modelResponse:'光看前面那篇評論還判不了誰會贏，民調不是開票機。先拿到原始調查再談贏面，別把聲量當選票。'});
   assert.equal(result.searches.length,0);
   assert.equal(result.calls.length,1);
@@ -269,7 +270,7 @@ test('現在是兩人誰會贏承接民調，不誤判更正、不重搜且保�
 });
 
 test('實際模型用整份抽樣誤差斷言旗鼓相當時，改回貼題且無確定勝負的短句',async()=>{
-  const result=await deliver({text:'/AI 現在是甲跟乙誰會贏?',botTurns:[{question:'台北選舉民調',answer:'🔎 民調資料整理｜甲46.8%、乙46.1%，抽樣誤差±3.1%。'}],
+  const result=await deliver({text:'/AI 現在是甲跟乙誰會贏?',botTurns:[{question:lookupMemoryQuestion('台北選舉民調','台北選舉民調'),answer:'🔎 民調資料整理｜甲46.8%、乙46.1%，抽樣誤差±3.1%。'}],
     modelResponse:'兩人差0.7個百分點，不過誤差±3.1%，這差距還算接近，目前旗鼓相當。'});
   assert.match(result.replies[0],/民調不是開票機/);
   assert.ok(!/旗鼓相當|目前|±3.1/u.test(result.replies[0]));
@@ -282,6 +283,41 @@ test('只有不相關的國外民調時不呼叫模型，也不列出無關網�
   assert.equal(result.searches.length,1);
   assert.equal(result.calls.length,0);
   assert.ok(!result.replies[0].includes('example.com'));
+});
+
+test('使用者最新回報：舊以色列民調與其追問不再污染新版，重查台北一次再自然承接',async()=>{
+  const now=Math.floor(Date.now()/1000);
+  const result=await deliver({sequence:['/AI 現在是成員丁跟成員丙誰會贏?','/AI 所以誰會贏？','/AI 所以這份怎麼看？'],tavilyKey:'test-key',botTurns:[
+    {ts:now-10,question:'現在是成員丁跟成員丙誰會贏?',answer:'這份判不了誰會贏，資料全跟以色列2026選舉有關，這調查是來錯場了啦。'},
+    {ts:now-20,question:'現在是成員丁跟成員丙誰會贏?\n查詢主題：台北選舉民調 核對更正：成員丁跟成員丙誰會贏?',answer:'🔎 民調資料整理｜全部是以色列選舉。https://example.com/israel'},
+  ],searchResults:[{url:'https://example.com/taipei',title:'台北市選情調查',content:'甲支持度46.8%，乙46.1%。',published_date:new Date().toISOString()}],
+    modelResponses:[JSON.stringify({points:[{text:'甲46.8%，乙46.1%。',source_ids:['S1'],evidence_quote:'甲支持度46.8%，乙46.1%。'}]}),'這份調查判不了誰會贏，民調不是開票機。','這份調查還缺日期和方法，先別把它當全市戰況。']});
+  assert.equal(result.searches.length,1);
+  assert.match(result.searches[0].query,/台北選舉民調/);
+  assert.ok(!/以色列|核對更正|israel/u.test(JSON.stringify(result.searches)));
+  assert.match(result.replies[0],/查錯場，算我的/);
+  assert.match(result.replies[0],/46.8%/);
+  assert.ok(!/以色列|israel/u.test(JSON.stringify(result.calls)));
+  assert.match(result.replies[1],/民調不是開票機/);
+  assert.equal(JSON.parse(result.calls[2].messages[1].content.replace(/\n\/no_think$/,'')).reply_intent,'poll_followup');
+  const latest=result.savedTurns.find(t=>t.message_id==='request-2');
+  assert.match(latest.question,/查詢主題：台北選舉民調/);
+  assert.match(latest.question,/查詢版本：regional-v1/);
+});
+
+test('舊民調沒有明顯污染字樣，新版首次追問也重新核對',async()=>{
+  const result=await deliver({text:'/AI 那這份民調怎麼看？',tavilyKey:'test-key',botTurns:[{question:'查證台北選舉民調',answer:'🔎 民調資料整理｜甲40%，乙39%，未提供日期。'}],
+    searchResults:[{url:'https://example.com/taipei',title:'台北公開資料',content:'尚無可核對調查。',published_date:new Date().toISOString()}],modelResponse:JSON.stringify({points:[{text:'片段尚無可核對調查。',source_ids:['S1'],evidence_quote:'尚無可核對調查。'}]})});
+  assert.equal(result.searches.length,1);
+  assert.ok(!JSON.stringify(result.calls).includes('甲40%'));
+  assert.match(result.replies[0],/重新核對/);
+});
+
+test('重新核對期間舊查詢被刪除，不回傳也不存新查證記憶',async()=>{
+  const result=await deliver({text:'/AI 所以誰會贏？',tavilyKey:'test-key',botTurns:[{question:'查證台北選舉民調',answer:'🔎 民調資料整理｜以色列選舉。'}],clearMemoryDuringGeneration:true,
+    searchResults:[{url:'https://example.com/taipei',title:'台北公開資料',content:'尚無可核對調查。',published_date:new Date().toISOString()}],modelResponse:JSON.stringify({points:[{text:'尚無調查',source_ids:['S1']}]})});
+  assert.match(result.replies[0],/記錄已清除/);
+  assert.deepEqual(result.savedTurns,[]);
 });
 
 test('互嘴保留玩笑路由，新題後抱怨懶惰不重查舊主題',async()=>{
@@ -370,7 +406,7 @@ test('請你查詢回應我確實走搜尋；查證問答可以供下一輪接�
   assert.equal(result.searches[0].query,'某產品是否已正式上市');
   assert.ok(!JSON.stringify(result.searches[0]).includes('先前'));
   assert.match(result.replies[0],/https:\/\/example.com\/report/);
-  assert.equal(result.savedTurns.find(t=>t.message_id==='request').question,'請你查詢回應我 某產品是否已正式上市');
+  assert.equal(result.savedTurns.find(t=>t.message_id==='request').question,lookupMemoryQuestion('請你查詢回應我 某產品是否已正式上市','某產品是否已正式上市'));
 });
 
 test('電機、數位與類比題採工程背景並給足回答空間，仍共用免費上限',async()=>{

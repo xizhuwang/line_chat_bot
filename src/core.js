@@ -151,20 +151,36 @@ export function banterIntent(question) {
     /^(?:你|妳)?自己下船|最後一班船/u.test(question);
 }
 
+const LOOKUP_MEMORY_REVISION='regional-v1';
+function pollFollowup(question) {
+  if(engineeringTopic(question)) return false;
+  return /誰(?:會)?贏|誰會輸|誰勝|(?:贏面|勝算).{0,6}(?:大|高)|會贏|會輸|勝選|五五波|穩贏|差距|比例|怎麼看|解讀|代表什麼|^你覺得呢/u.test(question);
+}
+function memoryTopic(turn) {return turn.question.match(/(?:^|\n)查詢主題：([^\n]+)/u)?.[1];}
+function currentLookupMemory(turn) {return turn.question.includes(`\n查詢版本：${LOOKUP_MEMORY_REVISION}`);}
+export function lookupMemoryQuestion(question,claim) {
+  const clean=String(question).replace(/(?:^|\n)查詢(?:主題|版本)：[^\n]*/gu,'').trim();
+  return `${clean.slice(0,160)}\n查詢主題：${String(claim).replace(/\s+/g,' ').slice(0,230)}\n查詢版本：${LOOKUP_MEMORY_REVISION}`;
+}
+
 function lastSearchTopic(turns) {
   for(const turn of turns) {
-    const carried=turn.question.match(/\n查詢主題：([^\n]+)/u)?.[1];
+    const carried=memoryTopic(turn);
     if(carried) return {claim:carried,turn};
     const explicit=requestedSearch(turn.question.replace(/^\/查證\s*/u,'查證 '));
     if(explicit) return {claim:explicit,turn};
-    if(explicit===null && !toneFeedback(turn.question) && !actionFeedback(turn.question) && !/^(?:所以|那|這樣|你剛|前面|上一)/u.test(turn.question)) return null;
+    if(explicit===null && !toneFeedback(turn.question) && !actionFeedback(turn.question) && !pollFollowup(turn.question) && !/^(?:所以|那|這樣|你剛|前面|上一)/u.test(turn.question)) return null;
   }
   return null;
 }
 
 export function resolveSearchRequest(question, turns=[]) {
   const requested=requestedSearch(question);
-  if(requested===null && /誰會贏|誰會輸|誰勝|(?:贏面|勝算).{0,6}(?:大|高)|會贏嗎/u.test(question) && /民調/u.test(lastSearchTopic(turns)?.claim || '')) return null;
+  const previous=lastSearchTopic(turns);
+  if(requested===null && pollFollowup(question) && /民調/u.test(previous?.claim || '')) {
+    if(currentLookupMemory(previous.turn)) return null;
+    return {claim:previous.claim.replace(/\s核對更正：[\s\S]*$/u,''),turns:[previous.turn],recovery:true};
+  }
   const correction=question.match(/^(?:現在是|目前是|我是說|我說的是)\s*(.{2,100})[。!！?？]?$/u)?.[1];
   if(requested===null && !actionFeedback(question) && !correction) return null;
   if(requested) return {claim:requested,turns:[]};
@@ -175,7 +191,7 @@ export function resolveSearchRequest(question, turns=[]) {
 
 export function prepareConversationMemory(input, candidates) {
   input.tone_mode = tonePreference(input.question) || candidates.map(turn=>tonePreference(turn.question)).find(Boolean) || 'contextual';
-  const turns = selectBotTurns(input, candidates);
+  const turns = selectBotTurns(input, candidates).filter(turn=>!(/民調/u.test(memoryTopic(turn)||requestedSearch(turn.question)||'') && !currentLookupMemory(turn)));
   input.recent_bot_turns = turns.slice().reverse().map(turn=>({question:turn.question,answer:turn.answer}));
   input.repeated_question_count = turns.filter(turn=>
     replyFingerprint(turn.question)===replyFingerprint(input.question) || (isAicDefinition(input.question)&&isAicDefinition(turn.question))).length;
@@ -183,9 +199,10 @@ export function prepareConversationMemory(input, candidates) {
     input.term_definitions = {AIC:'類比 IC（Analog IC）'};
     input.topic_hint = 'engineering';
   }
-  const checked=turns.slice().find(turn=>/🔎 (?:即時資料核對|民調資料整理)/u.test(turn.answer));
+  const checked=turns.slice().find(turn=>/🔎 (?:即時資料核對|民調資料整理)/u.test(turn.answer) || currentLookupMemory(turn));
   if(checked && input.topic_hint!=='engineering' && /民調/u.test(checked.question) && /民調|會贏|會輸|勝選|五五波|穩贏|贏面|差距|比例|怎麼看|解讀|代表什麼/u.test(input.question)) {
     input.reply_intent='poll_followup';
+    input.lookup_topic=memoryTopic(checked);
   }
   return turns;
 }
@@ -196,7 +213,7 @@ export function selectBotTurns(input, turns) {
   if (input.reply_intent === 'response_feedback') return turns.slice(0,2);
   if (!['conversation','banter'].includes(input.reply_intent)) return [];
   const question = input.question.trim();
-  if(/誰會贏|誰會輸|誰勝|(?:贏面|勝算).{0,6}(?:大|高)|會贏嗎/u.test(question) && /民調/u.test(lastSearchTopic(turns)?.claim || '')) return [lastSearchTopic(turns).turn];
+  if(pollFollowup(question) && /民調/u.test(lastSearchTopic(turns)?.claim || '')) return [lastSearchTopic(turns).turn];
   if (/^(?:所以|那麼|也就是|這樣說|那這|照這)/u.test(question) && question.length<=80) return turns.slice(0,3);
   // Only an actual follow-up may carry a prior answer into a new prompt.
   if (/最後一班船|(?:上|下)船|碼頭/u.test(question)) {

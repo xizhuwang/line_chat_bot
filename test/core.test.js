@@ -4,7 +4,7 @@ import { webcrypto } from "node:crypto";
 import {
   verifyLineSignature, taipeiDayStart, evenly, pseudonyms, revealCodes,
   extractAiText, parseJsonText, scoreRanking,
-  botMentionPrompt, dailyAiLimit, rankingText, rankingSample, discussionContext, conversationalInput, conversationalReply, requestedSearch,
+  botMentionPrompt, dailyAiLimit, rankingText, rankingSample, discussionContext, conversationalInput, conversationalReply, requestedSearch, lookupMemoryQuestion, prepareConversationMemory,
 } from "../src/core.js";
 
 globalThis.crypto ||= webcrypto;
@@ -33,6 +33,17 @@ test('時效資料的自然問法自動搜尋，但資料解讀與概念題不�
   for(const question of ['民調是什麼','台北選舉民調的抽樣誤差怎麼看','那這份民調怎麼看？','今天加班好累','不要搜尋最新民調']) assert.equal(requestedSearch(question),null);
 });
 
+test('舊查證不直接進入解讀背景；長查詢保存版本與主題且不讓使用者重複註記',()=>{
+  const input=conversationalInput('所以誰會贏？',[]);
+  prepareConversationMemory(input,[{question:'查證台北選舉民調',answer:'🔎 民調資料整理｜以色列的結果'}]);
+  assert.deepEqual(input.recent_bot_turns,[]);
+  const text=lookupMemoryQuestion('x'.repeat(1000)+'\n查詢版本：old\n查詢主題：錯誤', '台北民調'+'y'.repeat(1000));
+  assert.ok(text.length<=500);
+  assert.ok(!text.includes('查詢版本：old'));
+  assert.match(text,/查詢主題：台北民調/);
+  assert.match(text,/查詢版本：regional-v1/);
+});
+
 test("打氣不得新增道歉或酸民故事，不能承諾代替聯絡人", () => {
   const input=conversationalInput('幫成員丙加油打氣一下',[]);
   for(const reply of ['你願意誠懇道歉，這份態度值得肯定。','別被那些酸民搞到心煩啦！','你已經做得很好，我們都支持你。']) {
@@ -57,7 +68,7 @@ test("不同人物各自選取背景，Bot 要求不冒充人物事實", () => {
   assert.equal(overtime.target_name,'成員乙');
   assert.match(overtime.recent_discussion,/成員乙/);
   assert.ok(!overtime.recent_discussion.includes('成員甲'));
-  const roast=conversationalInput('叫成員甲別耍白痴了 工具甲就是屌 誰要用工具乙',rows);
+  const roast=conversationalInput('叫成員甲別耍白痴了 成員丙就是屌 誰要投成員丁',rows);
   assert.equal(roast.reply_intent,'roast');
   assert.equal(roast.target_name,'成員甲');
   assert.ok(!roast.recent_discussion.includes('加班'));

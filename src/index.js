@@ -1,7 +1,7 @@
 import {
   MODEL, MAX_REPLY, verifyLineSignature, taipeiDayStart, evenly,
   pseudonyms, revealCodes, extractAiText, parseJsonText, scoreRanking,
-  botMentionPrompt, dailyAiLimit, rankingSample, conversationalInput, conversationalReply, requestedSearch, prepareConversationMemory, resolveSearchRequest, toneFeedback,
+  botMentionPrompt, dailyAiLimit, rankingSample, conversationalInput, conversationalReply, requestedSearch, prepareConversationMemory, resolveSearchRequest, toneFeedback, lookupMemoryQuestion,
 } from "./core.js";
 import { searchWeb, searchMonthlyLimit, FACTCHECK_SYSTEM, renderFactCheck } from "./factcheck.js";
 import { DEBATE_SYSTEM, ENGINEERING_SYSTEM } from "./prompts.js";
@@ -189,7 +189,7 @@ async function handleEvent(event, env, ctx, destination) {
       } else {
         const search=resolveSearchRequest(question,turns);
         if(search && !search.claim) replyLater(ctx,env,token,'我來查。要接著查哪件事？這一小時沒有可沿用的查詢，請給主題或地點。');
-        else if(search || weatherRequest(question)) later(ctx, factCheckAndReply(env,groupId,(search?.claim ?? question).slice(0,2000),token,event.message.id,userId,question,search?.turns || []));
+        else if(search || weatherRequest(question)) later(ctx, factCheckAndReply(env,groupId,(search?.claim ?? question).slice(0,2000),token,event.message.id,userId,question,search?.turns || [],Boolean(search?.recovery)));
         else later(ctx, debateAndReply(env,groupId,question.slice(0,2000),token,event.message.id,userId,turns));
       }
     }
@@ -288,7 +288,7 @@ async function debateAndReply(env, groupId, question, token, requestMessageId, u
     // Keep the answer focused on arguments, without revealing or mapping participant codes.
     const answer = conversationalReply(text, input);
     await reply(env, token, answer);
-    await saveBotTurn(env, groupId, userId, requestMessageId, question, answer,
+    await saveBotTurn(env, groupId, userId, requestMessageId, input.lookup_topic ? lookupMemoryQuestion(question,input.lookup_topic) : question, answer,
       rows.map(row => row.message_id), previousTurns.map(turn => turn.message_id));
   } catch (error) {
     safeError(error);
@@ -298,9 +298,9 @@ async function debateAndReply(env, groupId, question, token, requestMessageId, u
   }
 }
 
-async function factCheckAndReply(env, groupId, claim, token, requestId, userId, question = claim, previousTurns=[]) {
+async function factCheckAndReply(env, groupId, claim, token, requestId, userId, question = claim, previousTurns=[], recovery=false) {
   const previousIds=previousTurns.map(turn=>turn.message_id);
-  const memoryQuestion=previousIds.length ? `${question}\n查詢主題：${claim}` : question;
+  const memoryQuestion=lookupMemoryQuestion(question,claim);
   const memoryExists=async()=> !previousIds.length || (await env.DB.prepare(`SELECT COUNT(*) AS n FROM bot_turns WHERE message_id IN (${previousIds.map(()=>'?').join(',')})`).bind(...previousIds).first()).n===previousIds.length;
   if(!await memoryExists()) { await reply(env,token,'先前對話記錄已清除，請提供要查的主題。'); return; }
   const weather=weatherRequest(claim);
@@ -324,7 +324,7 @@ async function factCheckAndReply(env, groupId, claim, token, requestId, userId, 
     const result = await env.DB.prepare("INSERT INTO search_usage(month,calls) VALUES (?,1) ON CONFLICT(month) DO UPDATE SET calls=calls+1 WHERE calls<?")
       .bind(new Date().toISOString().slice(0, 7), searchMonthlyLimit(env)).run();
     if (!result.meta?.changes) { await reply(env, token, "本月免費查證搜尋上限已達，普通 AI 討論仍可使用。"); return; }
-    const text = await within((async () => {
+    let text = await within((async () => {
       const sources = await searchWeb(env, claim);
       if (!sources.length) return /民調/u.test(claim)
         ? (/今天|本日|今日/u.test(claim) ? '🔎 民調資料整理｜這次搜尋未找到能確認本日日期的來源。不能據此說今天有或沒有新民調，也不拿舊數字代替。可改問「最新民調」查近期資料。'
@@ -337,6 +337,7 @@ async function factCheckAndReply(env, groupId, claim, token, requestId, userId, 
     })(), 20000);
     if (!await groupEnabled(env.DB, groupId)) { await reply(env, token, "群組已停用，這次查證不發送。"); return; }
     if(!await memoryExists()) { await reply(env,token,'先前對話記錄已清除，請提供要查的主題。'); return; }
+    if(recovery) text=`${previousTurns.some(turn=>/以色列|資料.{0,8}(?:無關|不相關)|來錯場/u.test(turn.answer))?'剛剛查錯場，算我的。重查這題：':'前面的資料我重新核對一次：'}\n${text}`;
     await reply(env, token, text);
     await saveBotTurn(env, groupId, userId, requestId, memoryQuestion, text,[],previousIds);
   } catch (error) {
