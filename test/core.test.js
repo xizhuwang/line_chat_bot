@@ -41,7 +41,7 @@ test('舊查證不直接進入解讀背景；長查詢保存版本與主題且�
   assert.ok(text.length<=500);
   assert.ok(!text.includes('查詢版本：old'));
   assert.match(text,/查詢主題：台北民調/);
-  assert.match(text,/查詢版本：regional-v1/);
+  assert.match(text,/查詢版本：sourced-v2/);
 });
 
 test("打氣不得新增道歉或酸民故事，不能承諾代替聯絡人", () => {

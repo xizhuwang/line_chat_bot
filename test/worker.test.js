@@ -9,7 +9,7 @@ import {lookupMemoryQuestion} from '../src/core.js';
 
 globalThis.crypto ||= webcrypto;
 
-async function deliver({ text, sequence, modelResponses, weatherResults, mentions, enabled = true, exhausted = false, searchExhausted = false, tavilyKey, modelResponse, searchResults = [], historyRows, botTurns = [], excluded = false, clearMemoryDuringGeneration = false }) {
+async function deliver({ text, sequence, modelResponses, weatherResults, mentions, enabled = true, exhausted = false, searchExhausted = false, tavilyKey, modelResponse, searchResults = [], pollDomains='example.com', historyRows, botTurns = [], excluded = false, clearMemoryDuringGeneration = false }) {
   const calls = [], replies = [], queries = [], pending = [], searches = [], weatherCalls=[];
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
@@ -35,7 +35,7 @@ async function deliver({ text, sequence, modelResponses, weatherResults, mention
   }, async batch(statements) { return Promise.all(statements.map(s => s.run())); } };
   const env = {
     DB: db, LINE_CHANNEL_SECRET: "test-secret", LINE_CHANNEL_ACCESS_TOKEN: "test-token",
-    TAVILY_API_KEY: tavilyKey,
+    TAVILY_API_KEY: tavilyKey, POLL_SOURCE_DOMAINS:pollDomains,
     AI: { async run(model, input) { calls.push(input); if(clearMemoryDuringGeneration) sqlite.exec('DELETE FROM bot_turns'); return { response: modelResponses?.[calls.length-1] || modelResponse || "先核對資料與法條，再討論各方提出的理由。" }; } },
   };
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.LINE_CHANNEL_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -182,7 +182,7 @@ test('重問定義可保留有新內容的模型回答，不強制變成保底�
 });
 
 test('民調追問承接來源；查阿及抱怨懶惰重查原主題，少講髒話立即生效',async()=>{
-  const poll=JSON.stringify({verdict:'supported',points:[{text:'甲支持度46.8%，乙46.1%。',source_ids:['S1']},{text:'差距在誤差範圍內，幾乎五五波。',source_ids:['S1']}],caveats:'調查資訊不完整'});
+  const poll=JSON.stringify({verdict:'supported',points:[{text:'甲支持度46.8%，乙46.1%。',source_ids:['S1'],evidence_quote:'甲支持度46.8%，乙46.1%。'},{text:'差距在誤差範圍內，幾乎五五波。',source_ids:['S1']}],caveats:'調查資訊不完整'});
   const result=await deliver({sequence:['/AI 查證台北選舉民調','/AI 所以甲會贏？','/AI 你查阿不要只會靠杯','/AI 有夠懶','/AI 不要整天只會幹幹叫','/AI AIC是什麼'],tavilyKey:'test-key',
     searchResults:[{url:'https://example.com/survey',title:'台北市調查',published_date:new Date().toISOString(),content:'甲支持度46.8%，乙46.1%。'}],
     modelResponses:[poll,'幹，你這問題跟太陽會不會升起一樣無聊，還不快去查民調？',poll,poll,'幹，AIC 是類比 IC。']});
@@ -225,9 +225,9 @@ test('本日民調、未加查證的民調與人物更正皆走搜尋，不靠�
   assert.equal(result.searches[0].time_range,'day');
   assert.equal(result.searches[1].time_range,'month');
   assert.equal(result.searches[0].filter_by_published_date,true);
-  assert.match(result.searches[2].query,/台北市市長選舉民調 核對更正：甲與乙/);
+  assert.match(result.searches[2].query,/台北市長選舉民調 核對更正：甲與乙/);
   assert.ok(result.calls.every(call=>!call.messages[1].content.includes('舊人物')));
-  assert.ok(result.calls.every(call=>call.messages[0].content.includes('資料核對助手')));
+  assert.ok(result.calls.every(call=>call.messages[0].content.includes('只用來源片段')));
   assert.ok(!result.replies.join('').includes('昨天才剛出'));
 });
 
@@ -302,7 +302,7 @@ test('使用者最新回報：舊以色列民調與其追問不再污染新版�
   assert.equal(JSON.parse(result.calls[2].messages[1].content.replace(/\n\/no_think$/,'')).reply_intent,'poll_followup');
   const latest=result.savedTurns.find(t=>t.message_id==='request-2');
   assert.match(latest.question,/查詢主題：台北選舉民調/);
-  assert.match(latest.question,/查詢版本：regional-v1/);
+  assert.match(latest.question,/查詢版本：sourced-v2/);
 });
 
 test('舊民調沒有明顯污染字樣，新版首次追問也重新核對',async()=>{
@@ -318,6 +318,39 @@ test('重新核對期間舊查詢被刪除，不回傳也不存新查證記憶',
     searchResults:[{url:'https://example.com/taipei',title:'台北公開資料',content:'尚無可核對調查。',published_date:new Date().toISOString()}],modelResponse:JSON.stringify({points:[{text:'尚無調查',source_ids:['S1']}]})});
   assert.match(result.replies[0],/記錄已清除/);
   assert.deepEqual(result.savedTurns,[]);
+});
+
+test('台灣民調搜尋限制具名來源；網易自媒體與偽裝子網域不交給模型',async()=>{
+  const result=await deliver({text:'/AI 查證台北選舉民調',tavilyKey:'test-key',pollDomains:'',searchResults:[
+    {url:'https://www.163.com/dy/article/fake.html',title:'台北最新民調驚人',content:'甲支持度99%。',published_date:new Date().toISOString()},
+    {url:'https://cna.com.tw.evil.example/fake',title:'台北市民調',content:'乙支持度98%。',published_date:new Date().toISOString()},
+    {url:'https://www.cna.com.tw/news/test',title:'台北市調查',content:'甲支持度46.8%，乙46.1%。',published_date:new Date().toISOString()},
+  ],modelResponse:JSON.stringify({points:[{text:'甲46.8%，乙46.1%。',source_ids:['S1'],evidence_quote:'甲支持度46.8%，乙46.1%。'}]})});
+  assert.equal(result.searches[0].include_domains_mode,'restrict');
+  assert.ok(result.searches[0].include_domains.includes('cna.com.tw'));
+  assert.equal(result.searches[0].max_results,8);
+  assert.equal(result.searches[0].chunks_per_source,3);
+  assert.equal(result.searches[0].filter_by_language,false);
+  assert.ok(!result.searches[0].query.includes('調查日期 樣本'));
+  assert.ok(!/163.com|evil.example|99%|98%/u.test(JSON.stringify(result.calls)));
+  assert.match(result.replies[0],/46.8%/);
+});
+
+test('只有自媒體結果時不呼叫模型、不把該頁當民調來源',async()=>{
+  const result=await deliver({text:'/AI 台北市市長選舉民調',tavilyKey:'test-key',pollDomains:'',searchResults:[
+    {url:'https://www.163.com/dy/article/fake.html',title:'台北最新民調驚人',content:'甲支持度99%。',published_date:new Date().toISOString()},
+  ]});
+  assert.equal(result.calls.length,0);
+  assert.ok(!result.replies[0].includes('163.com'));
+});
+
+test('前版地區篩選記憶也要重查，不能沿用先前通過的網易資料',async()=>{
+  const result=await deliver({text:'/AI 所以谁會贏？'.replace('谁','誰'),tavilyKey:'test-key',pollDomains:'',botTurns:[
+    {question:'查證台北選舉民調\n查詢主題：台北選舉民調\n查詢版本：regional-v1',answer:'🔎 民調資料整理｜來源是網易。https://www.163.com/dy/test'},
+  ],searchResults:[{url:'https://www.cna.com.tw/news/test',title:'台北市調查',content:'甲支持度46.8%，乙46.1%。',published_date:new Date().toISOString()}],modelResponse:JSON.stringify({points:[{text:'甲46.8%，乙46.1%。',source_ids:['S1'],evidence_quote:'甲支持度46.8%，乙46.1%。'}]})});
+  assert.equal(result.searches.length,1);
+  assert.ok(!JSON.stringify(result.calls).includes('163.com'));
+  assert.match(result.savedTurns.find(t=>t.message_id==='request').question,/sourced-v2/);
 });
 
 test('互嘴保留玩笑路由，新題後抱怨懶惰不重查舊主題',async()=>{

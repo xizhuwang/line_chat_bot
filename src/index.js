@@ -3,7 +3,7 @@ import {
   pseudonyms, revealCodes, extractAiText, parseJsonText, scoreRanking,
   botMentionPrompt, dailyAiLimit, rankingSample, conversationalInput, conversationalReply, requestedSearch, prepareConversationMemory, resolveSearchRequest, toneFeedback, lookupMemoryQuestion,
 } from "./core.js";
-import { searchWeb, searchMonthlyLimit, FACTCHECK_SYSTEM, renderFactCheck } from "./factcheck.js";
+import { searchWeb, searchMonthlyLimit, factCheckSystem, selectFactCheckSources, renderFactCheck } from "./factcheck.js";
 import { DEBATE_SYSTEM, ENGINEERING_SYSTEM } from "./prompts.js";
 import { weatherRequest, weatherReport } from './weather.js';
 
@@ -100,7 +100,7 @@ async function handleEvent(event, env, ctx, destination) {
   if (event.type === "leave" && groupId) { await deleteGroup(env.DB, groupId); return; }
   if (event.type === "join" && groupId) {
     await ensureGroup(env.DB, groupId);
-    replyLater(ctx, env, token, "群聊 AI 已加入，目前尚未記錄。管理員請先私訊 Bot 輸入 /我的ID，設定完成並告知群組成員後輸入 /啟用。輸入 /說明 查看隱私設定。");
+    replyLater(ctx, env, token, "群組戰報 AI 已加入，目前尚未記錄。管理員請先私訊 Bot 輸入 /我的ID，設定完成並告知群組成員後輸入 /啟用。輸入 /說明 查看隱私設定。");
     return;
   }
   if (event.type !== "message" || event.message?.type !== "text") return;
@@ -325,12 +325,12 @@ async function factCheckAndReply(env, groupId, claim, token, requestId, userId, 
       .bind(new Date().toISOString().slice(0, 7), searchMonthlyLimit(env)).run();
     if (!result.meta?.changes) { await reply(env, token, "本月免費查證搜尋上限已達，普通 AI 討論仍可使用。"); return; }
     let text = await within((async () => {
-      const sources = await searchWeb(env, claim);
+      const sources = selectFactCheckSources(await searchWeb(env, claim),claim);
       if (!sources.length) return /民調/u.test(claim)
         ? (/今天|本日|今日/u.test(claim) ? '🔎 民調資料整理｜這次搜尋未找到能確認本日日期的來源。不能據此說今天有或沒有新民調，也不拿舊數字代替。可改問「最新民調」查近期資料。'
           : '🔎 民調資料整理｜這次搜尋未找到可確認近期日期的來源，無法提供當期數字；不拿舊選舉資料補答案。')
         : "🔎 這次沒查到跟問題相關、可供核對的來源，我先不亂補新聞。可以縮小事件或日期再查。";
-      const raw = await generate(env, FACTCHECK_SYSTEM, JSON.stringify({ checked_at: new Date().toISOString(), claim, sources }), 750);
+      const raw = await generate(env, factCheckSystem(claim), JSON.stringify({ checked_at: new Date().toISOString(), claim, sources }), 750);
       let parsed;
       try { parsed = parseJsonText(raw); } catch { parsed = { verdict: "insufficient", caveats: "模型未產生可核對的結論，以下僅列出搜尋資料供你檢查。" }; }
       return renderFactCheck(parsed, sources,Date.now(),{claim});

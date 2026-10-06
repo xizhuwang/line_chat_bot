@@ -151,7 +151,7 @@ export function banterIntent(question) {
     /^(?:你|妳)?自己下船|最後一班船/u.test(question);
 }
 
-const LOOKUP_MEMORY_REVISION='regional-v1';
+const LOOKUP_MEMORY_REVISION='sourced-v2';
 function pollFollowup(question) {
   if(engineeringTopic(question)) return false;
   return /誰(?:會)?贏|誰會輸|誰勝|(?:贏面|勝算).{0,6}(?:大|高)|會贏|會輸|勝選|五五波|穩贏|差距|比例|怎麼看|解讀|代表什麼|^你覺得呢/u.test(question);
