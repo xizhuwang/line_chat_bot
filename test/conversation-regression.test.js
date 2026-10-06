@@ -59,3 +59,15 @@ test('真實模型漏評案例：外部證據零分，聊天原句ID仍可核對
  const result=scoreRanking({participants:[{id:'P1',clarity:20,responsiveness:10,evidence:0,logic:15,interaction:5,message_ids:['m1'],reason:'有排查步驟但沒有量測證據'}]},codes,evidence);
  assert.equal(result.length,1);assert.equal(result[0].scores.evidence,0);assert.deepEqual(result[0].proof,['m1']);
 });
+
+test('叫指定人物一聲弟弟只完成原句，不加群組角色或評論',()=>{
+ assert.equal(directConversationReply('叫成員甲一聲弟弟'),'成員甲，弟弟。');
+ assert.equal(directConversationReply('請幫我喊 John 一句「大哥」！'),'John，大哥。');
+ assert.equal(directConversationReply('叫成員甲別亂貼名單'),null);
+});
+
+test('純互嗆不讀六小時公開議題與工程背景，也不沿用前次民調答案',()=>{
+ const input=conversationalInput('你很屌',[{user_id:'a',message_id:'a',ts:Math.floor(Date.now()/1000),text:'今天貼了候選人名單，還聊船員。'}]);
+ prepareConversationMemory(input,[{question:'查證台北選舉民調',answer:'🔎 民調資料整理｜某候選人的支持度。'}]);
+ assert.equal(input.recent_discussion,'');assert.equal(input.recent_atmosphere,'');assert.deepEqual(input.recent_bot_turns,[]);
+});

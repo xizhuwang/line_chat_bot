@@ -157,6 +157,8 @@ export function banterIntent(question) {
 }
 
 export function directConversationReply(question) {
+  const address=question.trim().match(/^(?:請)?(?:幫我)?(?:叫|喊)\s*([^\n，。!?！？]{1,30}?)\s*一(?:聲|句)\s*[「『“"]?([^\n「」『』“”"，。!?！？]{1,16})[」』”"]?[。！!\s]*$/u);
+  if(address) return `${address[1].trim()}，${address[2].trim()}。`;
   if(/^(?:閉嘴|你閉嘴|先閉嘴|安靜)[！!。\s]*$/u.test(question)) return '好，先安靜。再標註我才回。';
   if(!/(?:拉|邀|加).{0,8}(?:群|進來)/u.test(question) && /(?:誰|哪個).{0,12}(?:訓練|教壞)你|你.{0,6}(?:從哪來|哪裡來|是誰)|where (?:do )?you come from/iu.test(question))
     return '我是跑在 Cloudflare 的 LINE Bot，用 Qwen 模型加上群聊設定回覆；群友沒有把我重新訓練過。嘴歪了是我沒接好，不是誰用 DOS 教我的啦。';
@@ -242,7 +244,7 @@ export function selectBotTurns(input, turns) {
     const callback=turns.find(turn=>phrases.some(phrase=>turn.answer.includes(phrase)));
     if(callback) return [callback];
   }
-  if (/^(?:你很屌|你他媽|你很猛|你很嘴)[!！?？。\s]*$/u.test(question)) return turns.slice(0, 1);
+  if (/^(?:你很屌|你他媽|你很猛|你很嘴)[!！?？。\s]*$/u.test(question)) return turns.filter(turn=>banterIntent(turn.question)).slice(0, 1);
   if (/^(?:你覺得呢|這樣合理嗎|為什麼|怎麼說|然後呢|所以呢|那接著呢|繼續|說清楚一點)[?？!！。\s]*$/u.test(question) ||
       /^(?:你剛(?:剛|才)說|剛(?:剛|才)那|前面那|上一(?:句|題|段)|你在不管什麼|你.*我在問你問題)/u.test(question)) return turns;
   // Recognize callbacks such as「那班長是誰」without making a stock joke permanent.
@@ -271,7 +273,7 @@ export function conversationalInput(question, rows, memberNames=new Map()) {
   const target = (cheer?.[1] || overtime?.[1] || roast?.[1] || award?.[1] || (personQuestion?knownMember?.[1] || personMatch[1]:'') || '').trim();
   const intent = toneFeedback(question) ? 'tone_feedback' : responseFeedback ? 'response_feedback' : award ? 'award' : personQuestion ? 'person_explanation' : cheer ? 'encouragement' : overtime ? 'unknown_overtime_reason' : roast ? 'roast' : demonstration ? 'demonstration' : termCorrection ? 'term_correction' : isAicDefinition(question) ? 'term_definition' : banterIntent(question) ? 'banter' : 'conversation';
   const technical = engineeringTopic(question);
-  const related = personQuestion ? chat.filter(row=>(knownMember && row.user_id===knownMember[0]) || row.text.includes(target)) : target && !award ? chat.filter(row => row.text.includes(target)) : demonstration || termCorrection ? [] : technical ? chat.filter(row => engineeringTopic(row.text)) : chat;
+  const related = intent==='banter' ? [] : personQuestion ? chat.filter(row=>(knownMember && row.user_id===knownMember[0]) || row.text.includes(target)) : target && !award ? chat.filter(row => row.text.includes(target)) : demonstration || termCorrection ? [] : technical ? chat.filter(row => engineeringTopic(row.text)) : chat;
   const codes = pseudonyms(related);
   const repeats=new Map();
   for(const row of related){const key=JSON.stringify([row.user_id,row.text.trim()]);const entry=repeats.get(key)||{author:codes.get(row.user_id),text:row.text.slice(0,140),count:0};entry.count++;repeats.set(key,entry);}

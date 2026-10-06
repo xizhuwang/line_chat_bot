@@ -559,3 +559,8 @@ test('戰力只評到一人時明列未完成的其他人，不把採樣人数�
  const input=JSON.parse(result.calls[0].messages[1].content.replace(/\n\/no_think$/,''));assert.equal(input.participants.length,2);
  assert.match(result.replies[0],/2 人；1 人取得可核對評分/);assert.match(result.replies[0],/未完成評分：成員乙/);assert.match(result.replies[0],/不代表0分/);
 });
+
+test('使用者回報的叫弟弟指令即使有旧公開議題与船梗背景也不呼叫模型',async()=>{
+ const result=await deliver({text:'/AI 叫成員甲一聲弟弟',historyRows:[{message_id:'a',user_id:'person',ts:1,text:'洋流艦隊船員轉貼候選人名單。'}],botTurns:[{question:'你在幹嘛',answer:'你是洋流艦隊指揮官，要幫某候選人拉票。'}]});
+ assert.deepEqual(result.replies,['成員甲，弟弟。']);assert.equal(result.calls.length,0);assert.equal(result.searches.length,0);assert.ok(!result.queries.some(q=>q.sql.includes('INSERT INTO analysis_usage')));
+});
