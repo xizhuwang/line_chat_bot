@@ -11,9 +11,5 @@
   },
   "devDependencies": {
     "wrangler": "4.147.0"
-  },
-  "description": "LINE group assistant with summaries, discussion scoring, source checks and weather forecasts",
-  "engines": {
-    "node": ">=24"
   }
 }

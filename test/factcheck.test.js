@@ -26,20 +26,20 @@ test("虛構來源無法產生肯定真假結論，連結由程式組裝", () =>
   const bad = renderFactCheck({ verdict: "supported", points: [{ text: "正確", source_ids: ["S99"] }] }, sources);
   assert.match(bad, /資料不足/);
   const good = renderFactCheck({ verdict: "mixed", points: [{ text: "需補充條件", source_ids: ["S1", "S99"] }] }, sources);
-  assert.match(good, /部分支持/);
+  assert.match(good, /需補充條件/);
   assert.match(good, /https:\/\/law\.moj\.gov\.tw\/test/);
   assert.ok(!good.includes("S99"));
 });
 
 test('民調方法資訊必須能在引用片段找到，不猜調查日期或誤差',()=>{
   const sources=normalizeSources([{url:'https://example.com/survey',title:'某研究社調查',published_date:'2026-10-06',content:'某研究社在2026/10/1至2026/10/3，以電話訪問1000人，抽樣誤差±3.1%。甲支持度46.8%。'}]);
-  const parsed={verdict:'supported',points:[{text:'甲支持度46.8%。',source_ids:['S1']}],survey:{source_ids:['S1'],organization:'某研究社',fieldwork_dates:'2026/10/1至2026/10/3',sample_size:'1000人',method:'電話訪問',margin_of_error:'±3.1%'}};
-  const good=renderFactCheck(parsed,sources,Date.now(),{claim:'公開民調資料'});
+  const parsed={verdict:'supported',points:[{text:'甲支持度46.8%。',source_ids:['S1'],evidence_quote:'甲支持度46.8%。'}],survey:{source_ids:['S1'],organization:'某研究社',fieldwork_dates:'2026/10/1至2026/10/3',sample_size:'1000人',method:'電話訪問',margin_of_error:'±3.1%'}};
+  const good=renderFactCheck(parsed,sources,Date.now(),{claim:'台北選舉民調'});
   assert.match(good,/調查日期：2026\/10\/1至2026\/10\/3/);
   assert.match(good,/樣本：1000人/);
   assert.match(good,/抽樣誤差：±3.1%/);
   const fabricated=renderFactCheck({...parsed,survey:{source_ids:['S1'],fieldwork_dates:'2026/10/6',sample_size:'2000人',margin_of_error:'±1.0%'}},sources,Date.now(),{claim:'民調'});
-  assert.match(fabricated,/調查日期：來源片段未提供/);
+  assert.match(fabricated,/調查日期或方法沒附完整/);
   assert.ok(!fabricated.includes('2000人')&&!fabricated.includes('±1.0%'));
   assert.doesNotThrow(()=>renderFactCheck({...parsed,survey:{source_ids:'S1'}},sources,Date.now(),{claim:'民調'}));
 });
@@ -64,4 +64,40 @@ test('今天更新的報導引用2022調查，不把歷史數字顯示為當期�
   assert.match(result,/其他年份的調查/);
   assert.ok(!result.includes('40%'));
   assert.match(result,/可能是更新日期/);
+});
+
+test('台北查詢不把以色列選舉或其他城市來源交給模型，臺台字形皆可匹配',()=>{
+  const sources=normalizeSources([
+    {url:'https://example.com/israel',title:'Israeli election polls',content:'Likud and Yashar',published_date:'2026-10-05'},
+    {url:'https://example.com/kao',title:'高雄市長民調',content:'高雄選民調查',published_date:'2026-10-05'},
+    {url:'https://example.com/taipei',title:'臺北市長民調',content:'臺北市選民',published_date:'2026-10-05'},
+  ]);
+  assert.deepEqual(filterSearchSources(sources,'台北選舉民調',Date.parse('2026-10-06T03:00:00Z')).map(s=>s.url),['https://example.com/taipei']);
+});
+
+test('正式報導、街訪和評論不拼成一份民調；省略 survey 仍只選同一來源',()=>{
+  const sources=normalizeSources([
+    {url:'https://example.com/street',title:'台北街頭民調',content:'街訪甲30票、乙19票。'},
+    {url:'https://example.com/report',title:'台北市調查結果',content:'甲46.8%，乙46.1%。'},
+    {url:'https://example.com/comment',title:'觀點》聲量追蹤',content:'聲量甲500筆。'},
+  ]);
+  const result=renderFactCheck({points:[
+    {text:'甲30票、乙19票。',source_ids:['S1'],evidence_quote:'甲30票、乙19票。'},
+    {text:'報導轉述甲46.8%，乙46.1%。',source_ids:['S2'],evidence_quote:'甲46.8%，乙46.1%。'},
+  ]},sources,Date.now(),{claim:'台北選舉民調'});
+  assert.match(result,/46.8%/);
+  assert.ok(!/30票|19票|street|未提供｜|支持度與看好/u.test(result));
+  const street=renderFactCheck({points:[{text:'街訪甲30票。',source_ids:['S1'],evidence_quote:'街訪甲30票、乙19票。'}]},sources.slice(0,1),Date.now(),{claim:'民調'});
+  assert.match(street,/街訪.*不能|代表全市選民/u);
+});
+
+test('民調数字必須有逐字原文與對應數字，不能編出差距、誤差或別份結果',()=>{
+  const sources=normalizeSources([{url:'https://example.com/report',title:'台北調查',content:'甲46.8%，乙46.1%。'}]);
+  const result=renderFactCheck({points:[
+    {text:'甲46.8%，乙46.1%。',source_ids:['S1'],evidence_quote:'甲46.8%，乙46.1%。'},
+    {text:'甲49.9%。',source_ids:['S1'],evidence_quote:'甲46.8%，乙46.1%。'},
+    {text:'乙48.1%。',source_ids:['S1']},
+  ]},sources,Date.now(),{claim:'民調'});
+  assert.match(result,/46.8%/);
+  assert.ok(!/49.9|48.1/u.test(result));
 });

@@ -182,19 +182,19 @@ test('重問定義可保留有新內容的模型回答，不強制變成保底�
 
 test('民調追問承接來源；查阿及抱怨懶惰重查原主題，少講髒話立即生效',async()=>{
   const poll=JSON.stringify({verdict:'supported',points:[{text:'甲支持度46.8%，乙46.1%。',source_ids:['S1']},{text:'差距在誤差範圍內，幾乎五五波。',source_ids:['S1']}],caveats:'調查資訊不完整'});
-  const result=await deliver({sequence:['/AI 查證公開民調資料','/AI 所以甲會贏？','/AI 你查阿不要只會靠杯','/AI 有夠懶','/AI 不要整天只會幹幹叫','/AI AIC是什麼'],tavilyKey:'test-key',
-    searchResults:[{url:'https://example.com/survey',title:'公開調查',published_date:new Date().toISOString(),content:'甲支持度46.8%，乙46.1%。'}],
+  const result=await deliver({sequence:['/AI 查證台北選舉民調','/AI 所以甲會贏？','/AI 你查阿不要只會靠杯','/AI 有夠懶','/AI 不要整天只會幹幹叫','/AI AIC是什麼'],tavilyKey:'test-key',
+    searchResults:[{url:'https://example.com/survey',title:'台北市調查',published_date:new Date().toISOString(),content:'甲支持度46.8%，乙46.1%。'}],
     modelResponses:[poll,'幹，你這問題跟太陽會不會升起一樣無聊，還不快去查民調？',poll,poll,'幹，AIC 是類比 IC。']});
-  assert.match(result.replies[0],/調查日期：來源片段未提供/);
+  assert.match(result.replies[0],/調查日期或方法沒附完整/);
   assert.ok(!result.replies[0].includes('判斷：目前資料支持'));
   assert.ok(!result.replies[0].includes('差距在誤差範圍內'));
   const input=JSON.parse(result.calls[1].messages[1].content.replace(/\n\/no_think$/,''));
   assert.equal(input.reply_intent,'poll_followup');
-  assert.ok(input.recent_bot_turns[0].answer.includes('公開調查'));
+  assert.ok(input.recent_bot_turns[0].answer.includes('台北市調查'));
   assert.match(result.replies[1],/不能這樣推/);
   assert.ok(!/無聊|快去查/.test(result.replies[1]));
   assert.equal(result.searches.length,3);
-  assert.ok(result.searches.every(search=>search.query.includes('公開民調資料')));
+  assert.ok(result.searches.every(search=>search.query.includes('台北選舉民調')));
   assert.ok(result.searches.every(search=>!search.query.includes('靠杯')&&!JSON.stringify(search).includes('先前')));
   assert.match(result.replies[4],/嘴過頭|少講髒話/);
   assert.ok(!/幹|靠北/.test(result.replies[4]));
@@ -216,10 +216,11 @@ test('省略主題的搜尋只沿用同群同人未過期問答，不把其他�
 
 test('本日民調、未加查證的民調與人物更正皆走搜尋，不靠舊模型記憶',async()=>{
   const result=await deliver({sequence:['/AI 台北市市長選舉本日民調','/AI 台北市市長選舉民調','/AI 現在是甲與乙'],tavilyKey:'test-key',
-    searchResults:[{url:'https://example.com/current',published_date:new Date().toISOString(),title:'公開調查',content:'甲支持度46.8%，乙46.1%。'},{url:'https://example.com/old',published_date:'2022-09-01',title:'舊選舉',content:'舊人物的資料'}],
+    searchResults:[{url:'https://example.com/current',published_date:new Date().toISOString(),title:'台北公開調查',content:'甲支持度46.8%，乙46.1%。'},{url:'https://example.com/old',published_date:'2022-09-01',title:'舊選舉',content:'舊人物的資料'}],
     modelResponse:JSON.stringify({verdict:'supported',points:[{text:'甲支持度46.8%，乙46.1%。',source_ids:['S1']}],caveats:'未提供調查方法'})});
   assert.equal(result.searches.length,3);
-  assert.equal(result.searches[0].topic,'news');
+  assert.equal(result.searches[0].topic,'general');
+  assert.equal(result.searches[0].country,'taiwan');
   assert.equal(result.searches[0].time_range,'day');
   assert.equal(result.searches[1].time_range,'month');
   assert.equal(result.searches[0].filter_by_published_date,true);
@@ -237,6 +238,43 @@ test('本日查詢只有昨天或缺日期的來源時，明說不能確認而�
   assert.equal(result.calls.length,0);
   assert.match(result.replies[0],/未找到能確認本日日期/);
   assert.ok(!result.replies[0].includes('40%'));
+});
+
+test('台北市新聞不反問使用者，直接查相關近期來源並短句整理',async()=>{
+  const result=await deliver({text:'/AI 台北市新聞',tavilyKey:'test-key',searchResults:[
+    {url:'https://example.com/local',title:'台北市道路施工公告',published_date:new Date().toISOString(),content:'台北市道路施工，請注意改道。'},
+    {url:'https://example.com/foreign',title:'以色列選舉',published_date:new Date().toISOString(),content:'Likud poll'},
+  ],modelResponse:JSON.stringify({points:[{text:'台北市有道路施工，出門注意改道。',source_ids:['S1'],evidence_quote:'台北市道路施工，請注意改道。'}],caveats:''})});
+  assert.equal(result.searches.length,1);
+  assert.equal(result.searches[0].country,'taiwan');
+  assert.equal(result.searches[0].language,'zh');
+  assert.equal(result.searches[0].search_depth,'basic');
+  assert.equal(result.searches[0].time_range,'week');
+  assert.ok(!result.calls[0].messages[1].content.includes('Likud'));
+  assert.match(result.replies[0],/道路施工/);
+  assert.ok(!result.replies[0].includes('有什麼特別'));
+});
+
+test('現在是兩人誰會贏承接民調，不誤判更正、不重搜且保留自然比喻',async()=>{
+  const result=await deliver({text:'/AI 現在是成員丁跟成員丙誰會贏?',tavilyKey:'test-key',
+    botTurns:[{question:'查證台北選舉民調',answer:'🔎 民調資料整理｜找到的是評論轉述，調查日期或方法沒附完整。'}],
+    modelResponse:'光看前面那篇評論還判不了誰會贏，民調不是開票機。先拿到原始調查再談贏面，別把聲量當選票。'});
+  assert.equal(result.searches.length,0);
+  assert.equal(result.calls.length,1);
+  const input=JSON.parse(result.calls[0].messages[1].content.replace(/\n\/no_think$/,''));
+  assert.equal(input.reply_intent,'poll_followup');
+  assert.equal(input.tone_mode,'contextual');
+  assert.match(result.replies[0],/民調不是開票機/);
+  assert.ok(!/調查單位：|樣本：|來源（/u.test(result.replies[0]));
+});
+
+test('只有不相關的國外民調時不呼叫模型，也不列出無關網址',async()=>{
+  const result=await deliver({text:'/AI 台北市市長選舉民調',tavilyKey:'test-key',searchResults:[
+    {url:'https://example.com/israel',title:'Israeli election polls',content:'Likud and Yashar',published_date:new Date().toISOString()},
+  ]});
+  assert.equal(result.searches.length,1);
+  assert.equal(result.calls.length,0);
+  assert.ok(!result.replies[0].includes('example.com'));
 });
 
 test('互嘴保留玩笑路由，新題後抱怨懶惰不重查舊主題',async()=>{
@@ -320,8 +358,8 @@ test('生成期間問答記憶被刪除時，不回傳也不重新儲存旧答�
 
 test('請你查詢回應我確實走搜尋；查證問答可以供下一輪接話',async()=>{
   const result=await deliver({text:'@AI 請你查詢回應我 某產品是否已正式上市',mentions:[{type:'user',isSelf:true,index:0,length:3}],
-    tavilyKey:'test-key',searchResults:[{url:'https://example.com/report',title:'公開報導',content:'產品發布與上市日期需要核對'}],
-    modelResponse:JSON.stringify({verdict:'insufficient',points:[{text:'須區分正式上市與測試版發布',source_ids:['S1']}],caveats:'缺少日期'})});
+    tavilyKey:'test-key',searchResults:[{url:'https://example.com/report',title:'公開報導',content:'辯論邀請與回應需要日期核對'}],
+    modelResponse:JSON.stringify({verdict:'insufficient',points:[{text:'須區分是否回應邀請與怯戰的主觀評價',source_ids:['S1']}],caveats:'缺少日期'})});
   assert.equal(result.searches[0].query,'某產品是否已正式上市');
   assert.ok(!JSON.stringify(result.searches[0]).includes('先前'));
   assert.match(result.replies[0],/https:\/\/example.com\/report/);
@@ -331,18 +369,18 @@ test('請你查詢回應我確實走搜尋；查證問答可以供下一輪接�
 test('電機、數位與類比題採工程背景並給足回答空間，仍共用免費上限',async()=>{
   for (const question of ['setup 和 hold 怎麼分','op amp 相位裕度不足怎麼查','電源電路的電容怎麼選']) {
     const result=await deliver({text:`/AI ${question}`,historyRows:[
-      {message_id:'unrelated',user_id:'p',ts:1,text:'今天討論不同工具的主張'},
+      {message_id:'unrelated',user_id:'p',ts:1,text:'今天討論不同觀點的主張'},
       {message_id:'engineering',user_id:'e',ts:2,text:'先看電路負載與波形'},
     ]});
     const input=JSON.parse(result.calls[0].messages[1].content.replace(/\n\/no_think$/,''));
     assert.equal(input.topic_hint,'engineering');
-    assert.ok(!input.recent_discussion.includes('工具'));
+    assert.ok(!input.recent_discussion.includes('觀點'));
     assert.equal(result.calls[0].max_tokens,1400);
     assert.equal(result.queries.find(q=>q.sql.includes('INSERT INTO analysis_usage')).args[2],300);
   }
 });
 
-test('工程查詢優先搜尋原廠文件，而非沿用預設站點',async()=>{
+test('工程查詢優先搜尋原廠文件，而非沿用公共議題官方站點',async()=>{
   const result=await deliver({text:'/AI 請你查詢 ADC 的 datasheet',tavilyKey:'test-key'});
   assert.equal(result.searches.length,1);
   assert.ok(result.searches[0].include_domains.includes('ti.com'));

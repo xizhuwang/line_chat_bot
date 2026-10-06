@@ -164,6 +164,7 @@ function lastSearchTopic(turns) {
 
 export function resolveSearchRequest(question, turns=[]) {
   const requested=requestedSearch(question);
+  if(requested===null && /誰會贏|誰會輸|誰勝|(?:贏面|勝算).{0,6}(?:大|高)|會贏嗎/u.test(question) && /民調/u.test(lastSearchTopic(turns)?.claim || '')) return null;
   const correction=question.match(/^(?:現在是|目前是|我是說|我說的是)\s*(.{2,100})[。!！?？]?$/u)?.[1];
   if(requested===null && !actionFeedback(question) && !correction) return null;
   if(requested) return {claim:requested,turns:[]};
@@ -185,7 +186,6 @@ export function prepareConversationMemory(input, candidates) {
   const checked=turns.slice().find(turn=>/🔎 (?:即時資料核對|民調資料整理)/u.test(turn.answer));
   if(checked && input.topic_hint!=='engineering' && /民調/u.test(checked.question) && /民調|會贏|會輸|勝選|五五波|穩贏|贏面|差距|比例|怎麼看|解讀|代表什麼/u.test(input.question)) {
     input.reply_intent='poll_followup';
-    input.tone_mode='restrained';
   }
   return turns;
 }
@@ -196,6 +196,7 @@ export function selectBotTurns(input, turns) {
   if (input.reply_intent === 'response_feedback') return turns.slice(0,2);
   if (!['conversation','banter'].includes(input.reply_intent)) return [];
   const question = input.question.trim();
+  if(/誰會贏|誰會輸|誰勝|(?:贏面|勝算).{0,6}(?:大|高)|會贏嗎/u.test(question) && /民調/u.test(lastSearchTopic(turns)?.claim || '')) return [lastSearchTopic(turns).turn];
   if (/^(?:所以|那麼|也就是|這樣說|那這|照這)/u.test(question) && question.length<=80) return turns.slice(0,3);
   // Only an actual follow-up may carry a prior answer into a new prompt.
   if (/最後一班船|(?:上|下)船|碼頭/u.test(question)) {
@@ -260,11 +261,11 @@ export function conversationalReply(text, input) {
   }
   if(input.reply_intent==='poll_followup' &&
       (/無聊|太陽.*升起|還不快去查|自己去查|穩贏|必勝|一定會贏|五五波|選戰還很久|選舉還(?:很久|早)/u.test(answer) || !/民調|調查|預測|勝選/u.test(answer))) {
-    return '不能這樣推。前面那份民調是特定時間的調查，不是勝選保證；支持度與「看好誰當選」也是不同題目。先確認調查日期、樣本與誤差，不能直接把它換算成誰會贏。';
+    return '不能這樣推，民調不是開票機。前面那份資料還不足以判定誰會贏；先看調查日期和方法，別把街訪、聲量跟支持度混成一鍋。';
   }
   if(input.reply_intent==='poll_followup') {
     answer=answer.replace(/(差(?:距)?(?:不到|約|只有|為|是|近|小於|大於)?\s*\d+(?:\.\d+)?)\s*[%％]/gu,'$1個百分點');
-    if(past.some(turn=>turn.answer.includes('調查日期：來源片段未提供'))) answer=answer.replace(/目前|現在/gu,'在那份調查中');
+    if(past.some(turn=>/調查日期：來源片段未提供|調查日期或方法沒附完整/u.test(turn.answer))) answer=answer.replace(/目前|現在/gu,'在那份調查中');
   }
   if(input.tone_mode==='restrained') answer=answer.replace(/(?:靠北|靠杯|幹(?:你娘|他媽)?(?!嘛|部|線|活)|他媽的?|屁啦|是在供三小)[，,！!\s]*/gu,'').trim();
   const duplicates = past.some(turn=>nearlySameReply(turn.answer,answer));
@@ -315,7 +316,8 @@ export function requestedSearch(question) {
   const conceptual=/什麼是|是什麼|定義|原理|怎麼做|如何做|怎麼看|解讀|代表什麼|差距|抽樣誤差/u.test(text);
   if(!/(?:不要|別).{0,4}(?:查|搜)/u.test(text) &&
       ((/民調/u.test(text) && (!conceptual || fresh) && /本日|今日|今天|最新|目前|最近|選舉|市長|台北|臺北/u.test(text)) ||
-       (fresh && !conceptual && /新聞|報導|消息|發布|價格|匯率|職務|人事|(?:工具|軟體|EDA).{0,6}版本/u.test(text)))) return text;
+       (!conceptual && /新聞|(?:最新|今日|今天|本日|最近).{0,10}(?:報導|消息)/u.test(text)) ||
+       (fresh && !conceptual && /發布|價格|匯率|職務|人事|(?:工具|軟體|EDA).{0,6}版本/u.test(text)))) return text;
   return null;
 }
 

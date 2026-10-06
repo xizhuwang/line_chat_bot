@@ -30,7 +30,7 @@ test('雲端實測的假防踢能力与調查時間猜測改為合理回覆，�
 
 test('時效資料的自然問法自動搜尋，但資料解讀與概念題不重複搜索',()=>{
   for(const question of ['台北市市長選舉本日民調','台北市市長選舉民調','今天的新聞','最新 EDA 工具版本']) assert.equal(requestedSearch(question),question);
-  for(const question of ['民調是什麼','公開民調資料的抽樣誤差怎麼看','那這份民調怎麼看？','今天加班好累','不要搜尋最新民調']) assert.equal(requestedSearch(question),null);
+  for(const question of ['民調是什麼','台北選舉民調的抽樣誤差怎麼看','那這份民調怎麼看？','今天加班好累','不要搜尋最新民調']) assert.equal(requestedSearch(question),null);
 });
 
 test("打氣不得新增道歉或酸民故事，不能承諾代替聯絡人", () => {
