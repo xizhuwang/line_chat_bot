@@ -1,7 +1,7 @@
 import {
   MODEL, MAX_REPLY, verifyLineSignature, taipeiDayStart, evenly,
   pseudonyms, revealCodes, extractAiText, parseJsonText, scoreRanking,
-  botMentionPrompt, dailyAiLimit, rankingSample, conversationalInput, conversationalReply, requestedSearch, prepareConversationMemory,
+  botMentionPrompt, dailyAiLimit, rankingSample, conversationalInput, conversationalReply, requestedSearch, prepareConversationMemory, resolveSearchRequest, toneFeedback,
 } from "./core.js";
 import { searchWeb, searchMonthlyLimit, FACTCHECK_SYSTEM, renderFactCheck } from "./factcheck.js";
 import { DEBATE_SYSTEM, ENGINEERING_SYSTEM } from "./prompts.js";
@@ -180,9 +180,18 @@ async function handleEvent(event, env, ctx, destination) {
     else if (!await groupEnabled(env.DB, groupId)) replyLater(ctx, env, token, "本群組尚未啟用，請由管理員輸入 /啟用。");
     else {
       if (userId) await saveMessage(env.DB, groupId, userId, event);
-      const search = requestedSearch(question);
-      if (search !== null || weatherRequest(question)) later(ctx, factCheckAndReply(env, groupId, (search ?? question).slice(0, 2000), token, event.message.id, userId, question));
-      else later(ctx, debateAndReply(env, groupId, question.slice(0, 2000), token, event.message.id, userId));
+      const {results: turns}=userId ? await env.DB.prepare("SELECT message_id,question,answer FROM bot_turns WHERE group_id=? AND user_id=? AND ts>=? ORDER BY ts DESC,message_id DESC LIMIT 4")
+        .bind(groupId,userId,seconds()-3600).all() : {results:[]};
+      if(toneFeedback(question) && requestedSearch(question)===null) {
+        const text=conversationalReply('',{reply_intent:'tone_feedback'});
+        await reply(env,token,text);
+        await saveBotTurn(env,groupId,userId,event.message.id,question,text);
+      } else {
+        const search=resolveSearchRequest(question,turns);
+        if(search && !search.claim) replyLater(ctx,env,token,'我來查。要接著查哪件事？這一小時沒有可沿用的查詢，請給主題或地點。');
+        else if(search || weatherRequest(question)) later(ctx, factCheckAndReply(env,groupId,(search?.claim ?? question).slice(0,2000),token,event.message.id,userId,question,search?.turns || []));
+        else later(ctx, debateAndReply(env,groupId,question.slice(0,2000),token,event.message.id,userId,turns));
+      }
     }
     return;
   }
@@ -249,7 +258,7 @@ async function saveBotTurn(env, groupId, userId, requestId, question, answer, so
   } catch (error) { safeError(error); }
 }
 
-async function debateAndReply(env, groupId, question, token, requestMessageId, userId) {
+async function debateAndReply(env, groupId, question, token, requestMessageId, userId, loadedTurns) {
   try {
     const limit = dailyAiLimit(env);
     if (!await reserveAnalysis(env.DB, groupId, limit)) {
@@ -261,7 +270,7 @@ async function debateAndReply(env, groupId, question, token, requestMessageId, u
     ).bind(groupId, seconds() - 6 * 3600, requestMessageId || "").all();
     const rows = newest.reverse();
     const input = conversationalInput(question, rows);
-    const { results: candidateTurns } = userId && ['conversation','term_definition','response_feedback'].includes(input.reply_intent)
+    const { results: candidateTurns } = loadedTurns ? {results:loadedTurns} : userId && ['conversation','term_definition','response_feedback'].includes(input.reply_intent)
       ? await env.DB.prepare("SELECT message_id,question,answer FROM bot_turns WHERE group_id=? AND user_id=? AND ts>=? ORDER BY ts DESC,message_id DESC LIMIT 4")
         .bind(groupId, userId, seconds() - 3600).all() : {results: []};
     const previousTurns = prepareConversationMemory(input, candidateTurns);
@@ -289,14 +298,18 @@ async function debateAndReply(env, groupId, question, token, requestMessageId, u
   }
 }
 
-async function factCheckAndReply(env, groupId, claim, token, requestId, userId, question = claim) {
+async function factCheckAndReply(env, groupId, claim, token, requestId, userId, question = claim, previousTurns=[]) {
+  const previousIds=previousTurns.map(turn=>turn.message_id);
+  const memoryQuestion=previousIds.length ? `${question}\n查詢主題：${claim}` : question;
+  const memoryExists=async()=> !previousIds.length || (await env.DB.prepare(`SELECT COUNT(*) AS n FROM bot_turns WHERE message_id IN (${previousIds.map(()=>'?').join(',')})`).bind(...previousIds).first()).n===previousIds.length;
+  if(!await memoryExists()) { await reply(env,token,'先前對話記錄已清除，請提供要查的主題。'); return; }
   const weather=weatherRequest(claim);
   if(weather) {
     try {
       const text=await weatherReport(weather);
-      if(!await groupEnabled(env.DB,groupId)) return;
+      if(!await groupEnabled(env.DB,groupId) || !await memoryExists()) return;
       await reply(env,token,text);
-      await saveBotTurn(env,groupId,userId,requestId,question,text);
+      await saveBotTurn(env,groupId,userId,requestId,memoryQuestion,text,[],previousIds);
     } catch(error) {
       safeError(error);
       await reply(env,token,'天氣資料暫時取不到，這次不猜。請稍後重試，或查中央氣象署：https://www.cwa.gov.tw/');
@@ -313,15 +326,19 @@ async function factCheckAndReply(env, groupId, claim, token, requestId, userId, 
     if (!result.meta?.changes) { await reply(env, token, "本月免費查證搜尋上限已達，普通 AI 討論仍可使用。"); return; }
     const text = await within((async () => {
       const sources = await searchWeb(env, claim);
-      if (!sources.length) return "🔎 沒有找到可供核對的來源，無法確認這個說法。請提供更精確的日期、事件或原始出處。";
+      if (!sources.length) return /民調/u.test(claim)
+        ? (/今天|本日|今日/u.test(claim) ? '🔎 民調資料整理｜這次搜尋未找到能確認本日日期的來源。不能據此說今天有或沒有新民調，也不拿舊數字代替。可改問「最新民調」查近期資料。'
+          : '🔎 民調資料整理｜這次搜尋未找到可確認近期日期的來源，無法提供當期數字；不拿舊選舉資料補答案。')
+        : "🔎 沒有找到可供核對的來源，無法確認這個說法。請提供更精確的日期、事件或原始出處。";
       const raw = await generate(env, FACTCHECK_SYSTEM, JSON.stringify({ checked_at: new Date().toISOString(), claim, sources }), 750);
       let parsed;
       try { parsed = parseJsonText(raw); } catch { parsed = { verdict: "insufficient", caveats: "模型未產生可核對的結論，以下僅列出搜尋資料供你檢查。" }; }
-      return renderFactCheck(parsed, sources);
+      return renderFactCheck(parsed, sources,Date.now(),{claim});
     })(), 20000);
     if (!await groupEnabled(env.DB, groupId)) { await reply(env, token, "群組已停用，這次查證不發送。"); return; }
+    if(!await memoryExists()) { await reply(env,token,'先前對話記錄已清除，請提供要查的主題。'); return; }
     await reply(env, token, text);
-    await saveBotTurn(env, groupId, userId, requestId, question, text);
+    await saveBotTurn(env, groupId, userId, requestId, memoryQuestion, text,[],previousIds);
   } catch (error) {
     safeError(error);
     const text = error?.message === "SEARCH_AUTH_ERROR" ? "搜尋金鑰無法使用，請管理員檢查設定。" :

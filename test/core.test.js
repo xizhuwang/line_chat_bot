@@ -17,6 +17,22 @@ test('明確查詢前綴進行搜尋，普通互嗆不觸發；邀請者不得�
   assert.match(conversationalReply('洋流號拉我進來的啦',conversationalInput('你是誰拉進群組的',[])),/沒顯示誰拉我進來/);
 });
 
+test('雲端實測的假防踢能力与調查時間猜測改為合理回覆，差距使用百分點',()=>{
+  const joke=conversationalReply('我可是群組裡的防踢系統，你踢得動嗎？',{reply_intent:'banter'});
+  assert.match(joke,/領便當/);
+  assert.ok(!joke.includes('防踢'));
+  const input={question:'所以甲會贏？',reply_intent:'poll_followup',recent_bot_turns:[{answer:'調查日期：來源片段未提供'}]};
+  const answer=conversationalReply('甲目前支持度46.8%，乙46.1%，差距不到2%，這是那份民調，不能確定勝負。',input);
+  assert.match(answer,/差距不到2個百分點/);
+  assert.ok(!answer.includes('目前'));
+  assert.match(conversationalReply('這份民調不能保證當選，畢竟選戰還很久。',input),/不能這樣推/);
+});
+
+test('時效資料的自然問法自動搜尋，但資料解讀與概念題不重複搜索',()=>{
+  for(const question of ['台北市市長選舉本日民調','台北市市長選舉民調','今天的新聞','最新 EDA 工具版本']) assert.equal(requestedSearch(question),question);
+  for(const question of ['民調是什麼','公開民調資料的抽樣誤差怎麼看','那這份民調怎麼看？','今天加班好累','不要搜尋最新民調']) assert.equal(requestedSearch(question),null);
+});
+
 test("打氣不得新增道歉或酸民故事，不能承諾代替聯絡人", () => {
   const input=conversationalInput('幫成員丙加油打氣一下',[]);
   for(const reply of ['你願意誠懇道歉，這份態度值得肯定。','別被那些酸民搞到心煩啦！','你已經做得很好，我們都支持你。']) {

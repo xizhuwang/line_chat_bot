@@ -180,6 +180,84 @@ test('重問定義可保留有新內容的模型回答，不強制變成保底�
   assert.equal(result.replies[0],answer);
 });
 
+test('民調追問承接來源；查阿及抱怨懶惰重查原主題，少講髒話立即生效',async()=>{
+  const poll=JSON.stringify({verdict:'supported',points:[{text:'甲支持度46.8%，乙46.1%。',source_ids:['S1']},{text:'差距在誤差範圍內，幾乎五五波。',source_ids:['S1']}],caveats:'調查資訊不完整'});
+  const result=await deliver({sequence:['/AI 查證公開民調資料','/AI 所以甲會贏？','/AI 你查阿不要只會靠杯','/AI 有夠懶','/AI 不要整天只會幹幹叫','/AI AIC是什麼'],tavilyKey:'test-key',
+    searchResults:[{url:'https://example.com/survey',title:'公開調查',published_date:new Date().toISOString(),content:'甲支持度46.8%，乙46.1%。'}],
+    modelResponses:[poll,'幹，你這問題跟太陽會不會升起一樣無聊，還不快去查民調？',poll,poll,'幹，AIC 是類比 IC。']});
+  assert.match(result.replies[0],/調查日期：來源片段未提供/);
+  assert.ok(!result.replies[0].includes('判斷：目前資料支持'));
+  assert.ok(!result.replies[0].includes('差距在誤差範圍內'));
+  const input=JSON.parse(result.calls[1].messages[1].content.replace(/\n\/no_think$/,''));
+  assert.equal(input.reply_intent,'poll_followup');
+  assert.ok(input.recent_bot_turns[0].answer.includes('公開調查'));
+  assert.match(result.replies[1],/不能這樣推/);
+  assert.ok(!/無聊|快去查/.test(result.replies[1]));
+  assert.equal(result.searches.length,3);
+  assert.ok(result.searches.every(search=>search.query.includes('公開民調資料')));
+  assert.ok(result.searches.every(search=>!search.query.includes('靠杯')&&!JSON.stringify(search).includes('先前')));
+  assert.match(result.replies[4],/嘴過頭|少講髒話/);
+  assert.ok(!/幹|靠北/.test(result.replies[4]));
+  assert.equal(result.calls.length,5);
+  const next=JSON.parse(result.calls[4].messages[1].content.replace(/\n\/no_think$/,''));
+  assert.equal(next.tone_mode,'restrained');
+  assert.ok(!result.replies[5].includes('幹'));
+});
+
+test('省略主題的搜尋只沿用同群同人未過期問答，不把其他人的話送搜尋',async()=>{
+  for(const turn of [{user_id:'other'},{group_id:'other-group'},{ts:Math.floor(Date.now()/1000)-3601}]) {
+    const result=await deliver({text:'/AI 你查啊不要只會靠杯',tavilyKey:'test-key',botTurns:[{...turn,question:'查證秘密內容',answer:'秘密答案'}]});
+    assert.equal(result.searches.length,0);
+    assert.equal(result.calls.length,0);
+    assert.ok(!result.replies[0].includes('秘密'));
+    assert.match(result.replies[0],/請給主題/);
+  }
+});
+
+test('本日民調、未加查證的民調與人物更正皆走搜尋，不靠舊模型記憶',async()=>{
+  const result=await deliver({sequence:['/AI 台北市市長選舉本日民調','/AI 台北市市長選舉民調','/AI 現在是甲與乙'],tavilyKey:'test-key',
+    searchResults:[{url:'https://example.com/current',published_date:new Date().toISOString(),title:'公開調查',content:'甲支持度46.8%，乙46.1%。'},{url:'https://example.com/old',published_date:'2022-09-01',title:'舊選舉',content:'舊人物的資料'}],
+    modelResponse:JSON.stringify({verdict:'supported',points:[{text:'甲支持度46.8%，乙46.1%。',source_ids:['S1']}],caveats:'未提供調查方法'})});
+  assert.equal(result.searches.length,3);
+  assert.equal(result.searches[0].topic,'news');
+  assert.equal(result.searches[0].time_range,'day');
+  assert.equal(result.searches[1].time_range,'month');
+  assert.equal(result.searches[0].filter_by_published_date,true);
+  assert.match(result.searches[2].query,/台北市市長選舉民調 核對更正：甲與乙/);
+  assert.ok(result.calls.every(call=>!call.messages[1].content.includes('舊人物')));
+  assert.ok(result.calls.every(call=>call.messages[0].content.includes('資料核對助手')));
+  assert.ok(!result.replies.join('').includes('昨天才剛出'));
+});
+
+test('本日查詢只有昨天或缺日期的來源時，明說不能確認而不呼叫模型補舊人名',async()=>{
+  const result=await deliver({text:'/AI 台北市市長選舉本日民調',tavilyKey:'test-key',
+    searchResults:[{url:'https://example.com/undated',title:'沒有日期',content:'一些人名'},{url:'https://example.com/yesterday',published_date:new Date(Date.now()-86400000).toISOString(),title:'昨天資料',content:'昨天的數字'}],
+    modelResponse:'昨天才剛有民調，舊人物支持度40%。'});
+  assert.equal(result.searches.length,1);
+  assert.equal(result.calls.length,0);
+  assert.match(result.replies[0],/未找到能確認本日日期/);
+  assert.ok(!result.replies[0].includes('40%'));
+});
+
+test('互嘴保留玩笑路由，新題後抱怨懶惰不重查舊主題',async()=>{
+  const joke=await deliver({text:'/AI 你很屌',botTurns:[{question:'你給我自動退群',answer:'我還沒領便當欸'}],modelResponse:'現在才發現？你這偵測延遲有點高欸。'});
+  const input=JSON.parse(joke.calls[0].messages[1].content.replace(/\n\/no_think$/,''));
+  assert.equal(input.reply_intent,'banter');
+  assert.equal(input.tone_mode,'contextual');
+  assert.equal(input.recent_bot_turns[0].answer,'我還沒領便當欸');
+  assert.match(joke.replies[0],/偵測延遲/);
+  const changed=await deliver({text:'/AI 有夠懶',tavilyKey:'test-key',botTurns:[{question:'你給我自動退群',answer:'玩笑回嘴'},{ts:Math.floor(Date.now()/1000)-30,question:'查證先前的事件',answer:'前次資料'}],modelResponse:'我還沒領便當，哪能現在下班啦。'});
+  assert.equal(changed.searches.length,0);
+  assert.equal(changed.calls.length,1);
+});
+
+test('省略主題搜尋生成期間原記憶被刪除，不回傳或補存結果',async()=>{
+  const result=await deliver({text:'/AI 你查啊',tavilyKey:'test-key',botTurns:[{question:'查證某產品已上市',answer:'前次片段'}],clearMemoryDuringGeneration:true,
+    searchResults:[{url:'https://example.com/report',title:'公告',content:'產品已上市'}],modelResponse:JSON.stringify({verdict:'supported',points:[{text:'產品已上市',source_ids:['S1']}]})});
+  assert.match(result.replies[0],/記錄已清除/);
+  assert.deepEqual(result.savedTurns,[]);
+});
+
 test('只更換粗口的近似重複不能過關，收到糾正不再反嗆提問者',async()=>{
   const content='AIC 就是類比 IC，也就是處理類比訊號的積體電路。像運算放大器、電壓調整器、感測器介面之類的，都是 AIC 的範疇。簡單說，就是直接處理連續變化的電壓或電流的晶片。';
   const result=await deliver({sequence:['/AI 你知道什麼是AIC嗎','/AI 你知道什麼是AIC嗎','/AI 你怎麼一直重複一樣的內容?'],
