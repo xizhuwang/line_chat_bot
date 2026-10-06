@@ -9,7 +9,7 @@ import {lookupMemoryQuestion} from '../src/core.js';
 
 globalThis.crypto ||= webcrypto;
 
-async function deliver({ text, sequence, modelResponses, weatherResults, mentions, enabled = true, exhausted = false, searchExhausted = false, tavilyKey, modelResponse, searchResults = [], pollDomains='example.com', historyRows, botTurns = [], excluded = false, clearMemoryDuringGeneration = false }) {
+async function deliver({ text, sequence, modelResponses, weatherResults, mentions, enabled = true, exhausted = false, searchExhausted = false, tavilyKey, modelResponse, searchResults = [], pollDomains='example.com', historyRows, botTurns = [], excluded = false, clearMemoryDuringGeneration = false, profileNames={} }) {
   const calls = [], replies = [], queries = [], pending = [], searches = [], weatherCalls=[];
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
@@ -49,7 +49,7 @@ async function deliver({ text, sequence, modelResponses, weatherResults, mention
       searches.push(JSON.parse(options.body));
       return Response.json({ results: searchResults });
     }
-    if (url.includes('/member/')) return Response.json({displayName:'測試成員'});
+    if (url.includes('/member/')) return Response.json({displayName:profileNames[String(url).split('/').at(-1)] || '測試成員'});
     replies.push(JSON.parse(options.body).messages[0].text); return new Response("ok");
   };
   try {
@@ -376,7 +376,7 @@ test('只更換粗口的近似重複不能過關，收到糾正不再反嗆提�
   const content='AIC 就是類比 IC，也就是處理類比訊號的積體電路。像運算放大器、電壓調整器、感測器介面之類的，都是 AIC 的範疇。簡單說，就是直接處理連續變化的電壓或電流的晶片。';
   const result=await deliver({sequence:['/AI 你知道什麼是AIC嗎','/AI 你知道什麼是AIC嗎','/AI 你怎麼一直重複一樣的內容?'],
     modelResponses:[content+'靠北，這還用問？',content+'笑死，這還用問？','對，我剛剛重複了。AIC 是類比 IC，像運算放大器。幹，這還用問？你是不是剛入行啊？']});
-  assert.equal(result.replies[0],content+'靠北，這還用問？');
+  assert.equal(result.replies[0],content);
   assert.match(result.replies[1],/微弱訊號/);
   assert.ok(!result.replies[1].includes('這還用問'));
   assert.match(result.replies[2],/算我的|照貼/);
@@ -456,7 +456,7 @@ test('電機、數位與類比題採工程背景並給足回答空間，仍共�
   }
 });
 
-test('工程查詢優先搜尋原廠文件，而非沿用公共議題官方站點',async()=>{
+test('工程查詢優先搜尋原廠文件，而非沿用公開議題官方站點',async()=>{
   const result=await deliver({text:'/AI 請你查詢 ADC 的 datasheet',tavilyKey:'test-key'});
   assert.equal(result.searches.length,1);
   assert.ok(result.searches[0].include_domains.includes('ti.com'));
@@ -504,7 +504,7 @@ test("戰力預設查近七天，本月查近三十天；長期資料可產生�
     const query=result.queries.find(q=>q.sql.includes('ORDER BY ts DESC') && q.sql.includes('LIMIT 10000'));
     assert.ok(Math.abs(query.args[1]-(Math.floor(Date.now()/1000)-days*86400))<3);
     assert.equal(result.calls[0].max_tokens,2400);
-    assert.match(result.replies[0],/分析 3 則實質發言、1 人/);
+    assert.match(result.replies[0],/採樣 3 則、1 人；1 人取得可核對評分/);
     assert.match(result.replies[0],/50\/100/);
   }
 });
@@ -535,4 +535,27 @@ test("標註查證先搜尋說法再生成附來源結果，不傳群組歷史",
   assert.equal(result.searches[0].search_depth, "basic");
   assert.ok(!JSON.stringify(result.searches[0]).includes("公開資料及法條"));
   assert.match(result.replies[0], /https:\/\/example.com\/source/);
+});
+
+test('人物提問依群組作者標籤取背景，不把其他公開議題原話套上身',async()=>{
+ const result=await deliver({text:'/AI 成員甲在幹嘛？我看不懂',profileNames:{memberA:'成員甲',memberB:'成員乙'},historyRows:[{message_id:'a',user_id:'memberA',ts:1,text:'我又轉貼了一次活動名單。'},{message_id:'b',user_id:'memberB',ts:2,text:'候選人最近在拉票。'}],modelResponse:'P1是重貼活動名單。'});
+ const input=JSON.parse(result.calls[0].messages[1].content.replace(/\n\/no_think$/,''));assert.equal(input.target_kind,'group_member');assert.match(input.recent_discussion,/活動名單/);assert.ok(!input.recent_discussion.includes('拉票'));
+ assert.equal(result.replies[0],'成員甲是重貼活動名單。');assert.ok(!JSON.stringify(input).includes('memberA'));
+});
+
+test('來源、支持谁、闭嘴及戰力機制走確定功能答覆，不浪費模型或沿用錯誤公開議題故事',async()=>{
+ for(const question of ['你從哪來的','候選甲跟候選乙你支持誰？','閉嘴','為什麼一直說話但是戰力沒有提升？']){
+ const result=await deliver({text:'/AI '+question,botTurns:[{question:'誰在忙？',answer:'他是候選人，在幫忙拉票。'}]});assert.equal(result.calls.length,0);assert.ok(!result.queries.some(q=>q.sql.includes('INSERT INTO analysis_usage')));assert.ok(!result.replies[0].includes('他是候選人'));}
+});
+
+test('懶人包傳入受話對象，Bot被嘴不會顯示為群友互吵',async()=>{
+ const result=await deliver({text:'/懶人包',historyRows:[{message_id:'a',user_id:'person',ts:1,text:'@AI 你是不是又接錯話了'},{message_id:'b',user_id:'person',ts:2,text:'這群是吃早餐用的'}],modelResponse:JSON.stringify({events:[{text:'P1質疑Bot接錯話。',actors:['P1'],recipient:'BOT',source_ids:['m1']},{text:'P1說這群是吃早餐用的。',actors:['P1'],recipient:'GROUP',source_ids:['m2']}],quotes:[]})});
+ const input=JSON.parse(result.calls[0].messages[1].content.replace(/\n\/no_think$/,''));assert.equal(input.messages[0].recipient,'BOT');assert.equal(input.messages[1].recipient,'GROUP');assert.match(result.replies[0],/與 Bot 互動/);assert.ok(!/交鋒點|尚無結論處/u.test(result.replies[0]));
+});
+
+test('戰力只評到一人時明列未完成的其他人，不把採樣人数當完整排名',async()=>{
+ const rows=['a','b'].flatMap(id=>[1,2,3].map(i=>({message_id:id+i,user_id:id,ts:i,text:id+'第'+i+'個理由：應該先核對原始資料再討論。'})));
+ const result=await deliver({text:'/戰力',historyRows:rows,profileNames:{a:'成員甲',b:'成員乙'},modelResponse:JSON.stringify({participants:[{id:'P1',clarity:20,responsiveness:10,evidence:5,logic:10,interaction:5,evidence_ids:['m1'],reason:'有提供核對理由'}]})});
+ const input=JSON.parse(result.calls[0].messages[1].content.replace(/\n\/no_think$/,''));assert.equal(input.participants.length,2);
+ assert.match(result.replies[0],/2 人；1 人取得可核對評分/);assert.match(result.replies[0],/未完成評分：成員乙/);assert.match(result.replies[0],/不代表0分/);
 });
