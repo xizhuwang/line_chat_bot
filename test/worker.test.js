@@ -268,6 +268,13 @@ test('現在是兩人誰會贏承接民調，不誤判更正、不重搜且保�
   assert.ok(!/調查單位：|樣本：|來源（/u.test(result.replies[0]));
 });
 
+test('實際模型用整份抽樣誤差斷言旗鼓相當時，改回貼題且無確定勝負的短句',async()=>{
+  const result=await deliver({text:'/AI 現在是甲跟乙誰會贏?',botTurns:[{question:'台北選舉民調',answer:'🔎 民調資料整理｜甲46.8%、乙46.1%，抽樣誤差±3.1%。'}],
+    modelResponse:'兩人差0.7個百分點，不過誤差±3.1%，這差距還算接近，目前旗鼓相當。'});
+  assert.match(result.replies[0],/民調不是開票機/);
+  assert.ok(!/旗鼓相當|目前|±3.1/u.test(result.replies[0]));
+});
+
 test('只有不相關的國外民調時不呼叫模型，也不列出無關網址',async()=>{
   const result=await deliver({text:'/AI 台北市市長選舉民調',tavilyKey:'test-key',searchResults:[
     {url:'https://example.com/israel',title:'Israeli election polls',content:'Likud and Yashar',published_date:new Date().toISOString()},

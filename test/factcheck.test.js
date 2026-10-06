@@ -101,3 +101,13 @@ test('民調数字必須有逐字原文與對應數字，不能編出差距、�
   assert.match(result,/46.8%/);
   assert.ok(!/49.9|48.1/u.test(result));
 });
+
+test('實際模型出現的缺其他候選人與重複欄位，不再填滿群聊答案',()=>{
+  const sources=normalizeSources([{url:'https://example.com/survey',title:'台北調查',content:'甲46.8%，乙46.1%。抽樣誤差±3.1%。'}]);
+  const result=renderFactCheck({points:[
+    {text:'甲46.8%，乙46.1%。',source_ids:['S1'],evidence_quote:'甲46.8%，乙46.1%。'},
+    {text:'抽樣誤差為±3.1%。',source_ids:['S1'],evidence_quote:'抽樣誤差±3.1%。'},
+    {text:'未提及其他候選人。',source_ids:['S1']}],caveats:'未提及其他候選人支持度，無法判斷整體選情格局。'},sources,Date.now(),{claim:'台北選舉民調'});
+  assert.match(result,/46.8%/);
+  assert.ok(!/未提及其他|抽樣誤差為|調查單位：|未提供/u.test(result));
+});

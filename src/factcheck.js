@@ -95,6 +95,7 @@ export const FACTCHECK_SYSTEM = `你是繁體中文群組資料核對助手，�
 回覆是群聊，不是填制式表單。先直接回答這次問題，points 寫成兩三句自然白話；不要逐項重複「未提供、無法核對、資料不足」。必要缺口集中成一句 caveats，避免開場長篇免責。不用固定髒話或硬塞笑點，可以用貼題比喻，例如「街訪是看熱鬧，不能直接當全市計分板」。先有內容才嘴，不罵提問者。
 新聞查詢整理實際片段中的事件重點，保留事件日期，不把舊事件更新頁當今天發生；不要反問使用者最近有什麼新聞。evidence_type=informal 是街訪或網路投票，不能代表全市；commentary 是評論或聲量分析，不能當原始民調。來源提到別份民調只能說它轉述了什麼，不拿評論的發布日期當該調查日期。
 民調查詢是資料整理，不是要你替勝負背書。只選一份來源最清楚的調查整理，不混合不同調查的數字；必須區分支持度與看好當選者的比例，後者不是勝選機率。新聞發布日期不等於調查日期。差距小不代表五五波；沒有誤差資料不能宣稱落在誤差範圍內，即使有整份調查的抽樣誤差也不能直接當成兩人差值的誤差或換算勝選機率。禁止「穩贏、一定會贏」等預測。不知道調查日期就不能稱最新。
+問民調時，來源若有候選人支持度數字，第一項 points 必須直接給姓名和各自百分比，例如「這份調查是甲46.8%、乙46.1%。」而非只寫「支持度接近」。支持度與看好度不得混淆。日期、样本、方法、誤差寫進 survey，不要再占用 points 重複一次；points 至多兩项，只補一個与問題有關的解讀或來源性质。survey 的樣本數帶原文單位，例如1000人。caveats 只講真正需要的限制，不因为不能保证最新就連續三句不敢回答。
 民調時必須另外輸出 survey：{source_ids:["S1"],organization:"來源原文或null",fieldwork_dates:"來源原文或null",sample_size:"來源原文或null",method:"來源原文或null",margin_of_error:"來源原文或null"}。先選一份最清楚的 report，沒有才用 commentary，最後才 informal。這些值必須是同一份來源中直接出現的原文，缺少就null，不猜；數字結果 points 也只引用這份來源。不混合街訪票數、不同民調及看好度成同一榜。不輸出「未提及其他候選人」等與使用者問題無關的填充句。
 「怯戰」等動機或評價詞不是單純事實，先查是否有邀請、回應、同意或拒絕辯論及日期，再區分可核對行為與公共議題評論；不能因未出席就斷言害怕，也不能以玩笑迴避原問題。
 只輸出 JSON：{"verdict":"supported|contradicted|mixed|insufficient","points":[{"text":"一句白話重點","source_ids":["S1"],"evidence_quote":"支持這句重點的來源片段原文"}],"caveats":"一句必要限制，沒有可用空字串","survey":{"source_ids":["S1"],"organization":null,"fieldwork_dates":null,"sample_size":null,"method":null,"margin_of_error":null}}。source_ids 只能使用提供的來源；evidence_quote 必須逐字存在對應來源，不能改寫或編造；points 最多三項，text 每項最多100字，caveats 最多120字。非民調可省略 survey。`;
@@ -120,6 +121,8 @@ export function renderFactCheck(parsed, sources, timestamp = Date.now(), options
     const ids = [...new Set(Array.isArray(point.source_ids) ? point.source_ids : [])].filter(id => allowed.has(id));
     if (typeof point.text !== "string" || !ids.length) return [];
     if(staleSurvey) return [];
+    if(polling && !/所有|全部|其他候選人/u.test(options.claim || '') && /未(?:提及|提供|見).{0,12}其他候選人/u.test(point.text)) return [];
+    if(polling && /^(?:調查(?:日期|時間|單位)|(?:未(?:提供|計算))?抽樣誤差|樣本數|調查方法)/u.test(point.text)) return [];
     if(polling && (/五五波|各.{0,3}50[%％]|穩贏|必勝|一定會贏/u.test(point.text) ||
       (!surveyFields.margin_of_error && /誤差.{0,6}範圍/u.test(point.text)) || (surveyIds.length && !ids.includes(surveyIds[0])))) return [];
     const evidence=ids.map(id=>`${allowed.get(id).title}\n${allowed.get(id).excerpt}`).join('\n').replace(/\s/g,'');
@@ -129,7 +132,7 @@ export function renderFactCheck(parsed, sources, timestamp = Date.now(), options
     const text=point.text.slice(0, 140).replace(/https?:\/\/\S+/g, "（見來源）")
       .replace(/(差(?:距)?(?:不到|約|只有|為|是|近|小於|大於)?\s*\d+(?:\.\d+)?)\s*[%％]/gu,'$1個百分點');
     return [{ text, ids:polling?[surveyIds[0]]:ids }];
-  }).slice(0, 3);
+  }).slice(0, polling?2:3);
   const verdict = points.length && labels[parsed?.verdict] ? parsed.verdict : "insufficient";
   const checkedAt = new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", dateStyle: "short", timeStyle: "short" }).format(timestamp);
   const used = new Set(points.flatMap(p => p.ids));
@@ -138,7 +141,7 @@ export function renderFactCheck(parsed, sources, timestamp = Date.now(), options
   const knownFields=polling ? [surveyFields.organization,surveyFields.fieldwork_dates?`調查日期：${surveyFields.fieldwork_dates}`:null,
     surveyFields.sample_size?`樣本：${surveyFields.sample_size}`:null,surveyFields.method,
     surveyFields.margin_of_error?`抽樣誤差：${surveyFields.margin_of_error}`:null].filter(Boolean) : [];
-  const caveats=typeof parsed?.caveats==='string' ? parsed.caveats.slice(0,150).replace(/https?:\/\/\S+/g,'（見來源）') : '';
+  const caveats=typeof parsed?.caveats==='string' && !(!/所有|全部|其他候選人/u.test(options.claim || '') && /未(?:提及|提供|見).{0,12}其他候選人/u.test(parsed.caveats)) ? parsed.caveats.slice(0,150).replace(/https?:\/\/\S+/g,'（見來源）') : '';
   const caveatLine=polling ? (!surveyFields.fieldwork_dates || !surveyFields.method ? '調查日期或方法沒附完整，先別把這份當成最新戰況。' : caveats) : caveats;
   return [`🔎 ${polling?'民調資料整理':'查到的重點'}｜${checkedAt} 台灣時間`,
     ...(polling && staleSurvey ? ['這是其他年份的調查，不能當成當期民調。'] : []),
