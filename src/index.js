@@ -1,7 +1,7 @@
 import {
   MODEL, MAX_REPLY, verifyLineSignature, taipeiDayStart, evenly,
   pseudonyms, revealCodes, extractAiText, parseJsonText, scoreRanking,
-  botMentionPrompt, dailyAiLimit, rankingSample, conversationalInput, conversationalReply, requestedSearch, prepareConversationMemory, resolveSearchRequest, toneFeedback, lookupMemoryQuestion, directConversationReply,
+  botMentionPrompt, dailyAiLimit, rankingSample, conversationalInput, conversationalReply, requestedSearch, prepareConversationMemory, resolveSearchRequest, toneFeedback, lookupMemoryQuestion, directConversationReply, conversationIssues, conversationFallback,
 } from "./core.js";
 import { searchWeb, searchMonthlyLimit, factCheckSystem, selectFactCheckSources, renderFactCheck } from "./factcheck.js";
 import { conversationSystem, ENGINEERING_SYSTEM } from "./prompts.js";
@@ -278,23 +278,42 @@ async function debateAndReply(env, groupId, question, token, requestMessageId, u
     const labels=await nameMap(env,groupId,allCodes);
     const memberNames=new Map([...allCodes].map(([id,code])=>[id,labels.get(code)]));
     const input = conversationalInput(question, rows,memberNames);
+    input.requester_name=memberNames.get(userId)||null;
+    input.reply_to='本次標註Bot的提問者；背景作者不等於提問者';
+    input.requester_discussion=rows.filter(row=>row.user_id===userId && !/^\s*\//u.test(row.text) && !/@(?:AI群聊助手|AI)(?:\s|$)/u.test(row.text)).slice(-6).map(row=>row.text.slice(0,400)).join('\n');
     const { results: candidateTurns } = loadedTurns ? {results:loadedTurns} : userId && ['conversation','term_definition','response_feedback'].includes(input.reply_intent)
       ? await env.DB.prepare("SELECT message_id,ts,question,answer FROM bot_turns WHERE group_id=? AND user_id=? AND ts>=? ORDER BY ts DESC,message_id DESC LIMIT 4")
         .bind(groupId, userId, seconds() - 3600).all() : {results: []};
     const previousTurns = prepareConversationMemory(input, candidateTurns);
     const text = await within(generate(env, input.topic_hint === 'engineering' ? ENGINEERING_SYSTEM : conversationSystem(input),
       JSON.stringify({ current_time: new Date().toISOString(), ...input }), input.topic_hint === 'engineering' ? 1400 : 700), 20000);
+    const sourcesValid=async()=>{
     if (!await groupEnabled(env.DB, groupId) || !await messagesStillExist(env.DB, rows.map(r => r.message_id))) {
       await reply(env, token, "討論資料已變動，請重新提問。");
-      return;
+      return false;
     }
     if (previousTurns.length) {
       const ids = previousTurns.map(turn => turn.message_id);
       const remembered = await env.DB.prepare(`SELECT COUNT(*) AS n FROM bot_turns WHERE message_id IN (${ids.map(()=>'?').join(',')})`).bind(...ids).first();
-      if (remembered.n !== ids.length) { await reply(env, token, '先前對話記錄已清除，請重新提問。'); return; }
+      if (remembered.n !== ids.length) { await reply(env, token, '先前對話記錄已清除，請重新提問。'); return false; }
     }
-    // Keep the answer focused on arguments, without revealing or mapping participant codes.
-    const answer = conversationalReply(text, input);
+    return true;
+    };
+    if(!await sourcesValid())return;
+    let answer = conversationalReply(text, input);
+    const issues=conversationIssues(answer,input,memberNames);
+    if(issues.length){
+      // One repair maximum, with its own quota reservation; never forward the bad answer as context.
+      if(await reserveAnalysis(env.DB,groupId,limit)){
+        try {
+          const repaired=await within(generate(env,input.topic_hint==='engineering'?ENGINEERING_SYSTEM:conversationSystem(input),
+            JSON.stringify({...input,repair_hint:issues,task:'上一個草稿未通過檢查，請直接重答question；不能叫錯人、捏造引述或資料庫行為，不複誦問題。'}),input.topic_hint==='engineering'?1400:700),20000);
+          answer=conversationalReply(repaired,input);
+        }catch(error){safeError(error);answer=conversationFallback(input);}
+      }else answer=conversationFallback(input);
+      if(conversationIssues(answer,input,memberNames).length)answer=conversationFallback(input);
+      if(!await sourcesValid())return;
+    }
     await reply(env, token, answer);
     await saveBotTurn(env, groupId, userId, requestMessageId, input.lookup_topic ? lookupMemoryQuestion(question,input.lookup_topic) : question, answer,
       rows.map(row => row.message_id), previousTurns.map(turn => turn.message_id));

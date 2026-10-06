@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {conversationalInput,conversationalReply,prepareConversationMemory,directConversationReply,rankingSample,scoreRanking} from '../src/core.js';
+import {conversationalInput,conversationalReply,prepareConversationMemory,directConversationReply,rankingSample,scoreRanking,conversationIssues} from '../src/core.js';
 import {summaryEntries,renderSummary} from '../src/analysis.js';
 
 test('人物題以作者名稱找到群友發言，不把群友補成候選人',()=>{
@@ -100,4 +100,29 @@ test('未來或缺失時間不冒充最新氣氛，Bot問答也帶時間衰減',
  assert.equal(input.recent_discussion,'');
  prepareConversationMemory(input,[{ts:now-60,question:'船長？',answer:'我負責外送'},{ts:now-1800,question:'船員？',answer:'我負責點餐'}]);
  assert.equal(input.bot_turn_priorities[0].time_weight,0.5);assert.ok(input.bot_turn_priorities[1].time_weight>0.9);
+});
+
+test('粗口清理保留幹話語義，字詞引用不刪成空引號',()=>{
+ const input=conversationalInput('不要講垃圾話，請回答',[]);prepareConversationMemory(input,[]);
+ const answer=conversationalReply('我不把幹話資料庫當知識庫；也不靠「幹」字充數。',input);
+ assert.match(answer,/幹話資料庫/);assert.ok(!answer.includes('「」'));assert.match(answer,/「粗口」/);
+});
+
+test('實際回報互嗆進入Bot受話路由，證明不足可取回原任務',()=>{
+ for(const question of ['你就繼續講垃圾話 把你淘汰','你滾吧','你這樣講話有人回你嗎'])assert.equal(conversationalInput(question,[]).reply_intent,'banter');
+ const input=conversationalInput('你這樣的證明可能還不夠',[]);assert.equal(input.reply_intent,'response_feedback');
+ prepareConversationMemory(input,[{question:'證明你比meta ai聰明',answer:'我比Meta聰明的證據就是我沒罵人。'}]);assert.match(input.recent_bot_turns[0].question,/meta ai/);
+ assert.ok(conversationIssues('你這樣的證明可能還不夠，那我來證明你這樣說還不夠夠夠夠～',input).includes('echo_instead_of_answer'));
+ assert.ok(conversationIssues('我比Meta AI聰明的證據就是我沒罵人。',input).includes('unsupported_comparison'));
+ assert.ok(!conversationIssues('沒有共同測試，不能證明我比Meta AI聰明。',input).includes('unsupported_comparison'));
+ const banter=conversationalInput('你滾吧',[]);
+ assert.ok(conversationIssues('我已經把群組設定成自動回復模式了。',banter).includes('invented_group_action'));
+ assert.equal(conversationalReply('你滾吧\n好啦，退場不用演三集。',banter),'好啦，退場不用演三集。');
+});
+
+test('背景作者說過的話不能變成提問者自己的經歷，明確原話仍可接續',()=>{
+ const input=conversationalInput('你這樣講話有人回你嗎',[]);
+ assert.ok(conversationIssues('有人回啊，不然我怎麼知道你剛剛在討論洋流船員名單和宵夜炸雞？',input).includes('invented_requester_history'));
+ input.requester_discussion='我剛剛貼了洋流船員名單和宵夜炸雞。';
+ assert.ok(!conversationIssues('你剛剛說洋流船員名單和宵夜炸雞。',input).includes('invented_requester_history'));
 });

@@ -9,7 +9,7 @@ import {lookupMemoryQuestion} from '../src/core.js';
 
 globalThis.crypto ||= webcrypto;
 
-async function deliver({ text, sequence, modelResponses, weatherResults, mentions, enabled = true, exhausted = false, searchExhausted = false, tavilyKey, modelResponse, searchResults = [], pollDomains='example.com', historyRows, botTurns = [], excluded = false, clearMemoryDuringGeneration = false, profileNames={} }) {
+async function deliver({ text, sequence, modelResponses, weatherResults, mentions, enabled = true, exhausted = false, dailyAiLimit=300, searchExhausted = false, tavilyKey, modelResponse, searchResults = [], pollDomains='example.com', historyRows, botTurns = [], excluded = false, clearMemoryDuringGeneration = false, clearMemoryDuringRepair=false, profileNames={} }) {
   const calls = [], replies = [], queries = [], pending = [], searches = [], weatherCalls=[];
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
@@ -34,9 +34,9 @@ async function deliver({ text, sequence, modelResponses, weatherResults, mention
     };
   }, async batch(statements) { return Promise.all(statements.map(s => s.run())); } };
   const env = {
-    DB: db, LINE_CHANNEL_SECRET: "test-secret", LINE_CHANNEL_ACCESS_TOKEN: "test-token",
+    DB: db, LINE_CHANNEL_SECRET: "test-secret", LINE_CHANNEL_ACCESS_TOKEN: "test-token", DAILY_AI_LIMIT:String(dailyAiLimit),
     TAVILY_API_KEY: tavilyKey, POLL_SOURCE_DOMAINS:pollDomains,
-    AI: { async run(model, input) { calls.push(input); if(clearMemoryDuringGeneration) sqlite.exec('DELETE FROM bot_turns'); return { response: modelResponses?.[calls.length-1] || modelResponse || "先核對資料與法條，再討論各方提出的理由。" }; } },
+    AI: { async run(model, input) { calls.push(input); if(clearMemoryDuringGeneration || (clearMemoryDuringRepair&&calls.length===2)) sqlite.exec('DELETE FROM bot_turns'); return { response: modelResponses?.[calls.length-1] || modelResponse || "先核對資料與法條，再討論各方提出的理由。" }; } },
   };
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.LINE_CHANNEL_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const originalFetch = globalThis.fetch;
@@ -565,4 +565,41 @@ test('叫弟弟走AI可加戲，舊背景依時間降權而不固定成一句',a
  const result=await deliver({text:'/AI 叫成員甲一聲弟弟',historyRows:[{message_id:'a',user_id:'person',ts:now-4*3600,text:'洋流艦隊船員轉貼候選人名單。'},{message_id:'b',user_id:'person',ts:now-60,text:'剛點了宵夜。'}],botTurns:[{question:'你在幹嘛',answer:'你是洋流艦隊指揮官，要幫某候選人拉票。'}],modelResponse:'成員甲，弟弟！叫都叫了，宵夜記得分我一份 😎'});
  assert.deepEqual(result.replies,['成員甲，弟弟！叫都叫了，宵夜記得分我一份 😎']);assert.equal(result.calls.length,1);assert.equal(result.searches.length,0);
  const input=JSON.parse(result.calls[0].messages[1].content.replace(/\n\/no_think$/,''));assert.equal(input.reply_intent,'playful_address');assert.equal(input.requested_address,'弟弟');assert.match(input.recent_discussion,/宵夜/);assert.ok(!input.recent_discussion.includes('候選人'));assert.deepEqual(input.recent_bot_turns,[]);
+});
+
+test('只標註Bot和多人不把剩餘人名當問題，附實際問題仍能回覆',async()=>{
+ const text='@成員甲 @成員乙 @AI ';
+ const mentions=[{type:'user',userId:'a',index:0,length:4},{type:'user',userId:'b',index:5,length:4},{type:'user',isSelf:true,index:10,length:3}];
+ const empty=await deliver({text,mentions});assert.equal(empty.calls.length,0);assert.equal(empty.searches.length,0);assert.match(empty.replies[0],/附上問題/);assert.equal(empty.savedTurns.length,0);
+ const actual=await deliver({text:text+'請叫成員甲一聲弟弟',mentions,modelResponse:'成員甲弟弟，這聲叫完，宵夜可以上桌了 😎'});
+ assert.equal(actual.calls.length,1);assert.match(actual.replies[0],/成員甲弟弟/);
+});
+
+test('自我辯護及證明不足接回同人上一題，完整示範不借用背景人物',async()=>{
+ const result=await deliver({sequence:['/AI 請為你自己辯護一下 證明你比meta ai還聰明','/AI 你這樣的證明可能還不夠'],historyRows:[{message_id:'a',user_id:'other',ts:1,text:'成員甲剛剛在吃宵夜。'}],profileNames:{other:'成員甲'},modelResponses:['沒有共同測試不能說全面比Meta聰明。理想反相放大器增益 −100k/10k=−10；輸入20 mV，輸出 −200 mV，仍需檢查擺幅。','你說得對，要看解題而非自吹。以相同題目、相同評分標準比較；前題增益 −10，仍需檢查負載和頻寬。']});
+ const inputs=result.calls.map(call=>JSON.parse(call.messages[1].content.replace(/\n\/no_think$/,'')));
+ assert.equal(inputs[0].reply_intent,'capability_demo');assert.equal(inputs[1].reply_intent,'response_feedback');assert.match(inputs[1].recent_bot_turns.at(-1).question,/證明你比meta/);assert.ok(!result.replies[1].includes('夠夠'));assert.equal(result.calls.length,2);
+});
+
+test('回覆叫錯群友與捏造話資料庫時，只重寫一次且各自計入額度',async()=>{
+ const result=await deliver({text:'/AI 你就繼續講垃圾話 把你淘汰',historyRows:[{message_id:'a',user_id:'other',ts:1,text:'成員甲想吃宵夜。'}],profileNames:{other:'成員甲'},modelResponses:['成員甲，我已經把你的廢話存進話資料庫了。','先別急著淘汰啦，我先把亂接的垃圾話收回，拿下一題來驗收。']});
+ assert.equal(result.calls.length,2);assert.deepEqual(result.replies,['先別急著淘汰啦，我先把亂接的垃圾話收回，拿下一題來驗收。']);assert.equal(result.queries.filter(q=>q.sql.startsWith('INSERT INTO analysis_usage')).length,2);
+ const retry=JSON.parse(result.calls[1].messages[1].content.replace(/\n\/no_think$/,''));assert.ok(retry.repair_hint.includes('wrong_person'));assert.ok(retry.repair_hint.includes('invented_storage_action'));assert.ok(!JSON.stringify(retry).includes('我已經把你的廢話存進'));assert.equal(result.savedTurns.at(-1).answer,result.replies[0]);
+});
+
+test('重寫不繞過免費上限，再次錯答也不無限重試或保存錯誤答案',async()=>{
+ const options={text:'/AI 你這樣講話有人回你嗎',historyRows:[{message_id:'a',user_id:'other',ts:1,text:'成員甲正在吃早餐。'}],profileNames:{other:'成員甲'},modelResponse:'成員甲剛剛說你講話快變得跟成員甲一樣了。'};
+ const limited=await deliver({...options,dailyAiLimit:1});assert.equal(limited.calls.length,1);assert.ok(!limited.replies[0].includes('成員甲'));assert.match(limited.replies[0],/你現在就回我/);
+ const repeated=await deliver(options);assert.equal(repeated.calls.length,2);assert.ok(!repeated.replies[0].includes('成員甲'));assert.equal(repeated.savedTurns.at(-1).answer,repeated.replies[0]);
+});
+
+test('重寫期間記憶被刪除仍不回傳或補存答案',async()=>{
+ const result=await deliver({text:'/AI 你這樣的證明可能還不夠',historyRows:[{message_id:'a',user_id:'other',ts:1,text:'成員甲正在吃早餐。'}],profileNames:{other:'成員甲'},botTurns:[{question:'證明你比Meta聰明',answer:'沒有共同測試不能比較。'}],modelResponses:['成員甲剛剛說你不够夠夠夠。','你說得對，應該用同題比較。'],clearMemoryDuringRepair:true});
+ assert.equal(result.calls.length,2);assert.match(result.replies[0],/先前對話記錄已清除/);assert.equal(result.savedTurns.length,0);
+});
+
+test('證明不足時不照貼上一個答案充數，補答可加入可核對的新檢查',async()=>{
+ const old='沒有共同測試不能證明比Meta更聰明。理想反相放大器Rin=10 kΩ、Rf=100 kΩ，增益 −10，輸入20 mV得到 −200 mV，需檢查頻寬和輸出擺幅。';
+ const result=await deliver({text:'/AI 你這樣的證明可能還不夠',botTurns:[{question:'證明你比Meta聰明',answer:old}],modelResponses:[old,'補一個實務檢查：另假設單極運放GBW=1 MHz，噪聲增益=1+100k/10k=11，頻寬估計約90.9 kHz；不能直接用訊號增益10去除。這仍是假設模型，不是實測。']});
+ assert.equal(result.calls.length,2);assert.match(result.replies[0],/90.9 kHz/);assert.ok(!result.replies[0].includes('理想反相放大器Rin'));
 });

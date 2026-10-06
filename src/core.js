@@ -56,6 +56,13 @@ export function botMentionPrompt(message, destination) {
     Number.isInteger(m.index) && Number.isInteger(m.length) && m.index >= 0 &&
     m.length > 0 && m.index + m.length <= text.length);
   if (!mentions.length) return null;
+  // Only tagging several people is not a question addressed to the bot.
+  let withoutMentions=text;
+  const validMentions=(message.mention?.mentionees || []).filter(m=>
+    ['user','all'].includes(m.type) && Number.isInteger(m.index) && Number.isInteger(m.length) &&
+    m.index>=0 && m.length>0 && m.index+m.length<=text.length);
+  for(const m of validMentions.sort((a,b)=>b.index-a.index))withoutMentions=withoutMentions.slice(0,m.index)+withoutMentions.slice(m.index+m.length);
+  if(!/[\p{L}\p{N}]/u.test(withoutMentions))return '';
   let prompt = text;
   for (const m of mentions.sort((a, b) => b.index - a.index)) {
     prompt = prompt.slice(0, m.index) + prompt.slice(m.index + m.length);
@@ -153,7 +160,8 @@ function actionFeedback(question) {
 export function banterIntent(question) {
   return /^(?:你很屌|你他媽|你很猛|你很嘴|有夠懶)[!！?？。\s]*$/u.test(question) ||
     /^(?:你給我|你|妳)?(?:自動)?退群[!！?？。\s]*$/u.test(question) ||
-    /^(?:你|妳)?自己下船|最後一班船/u.test(question) || /^(?:你|妳).{0,10}(?:耍憨|耍白痴|是不是M|想當船員|想當船長)/iu.test(question);
+    /^(?:你|妳)?自己下船|最後一班船/u.test(question) || /^(?:你|妳).{0,10}(?:耍憨|耍白痴|是不是M|想當船員|想當船長)/iu.test(question) ||
+    /^(?:你|妳)(?:就)?(?:繼續)?(?:講|說)?垃圾話|^(?:你|妳)?滾(?:吧|啦|開)?[!！?？。\s]*$|^(?:你|妳).{0,18}(?:把你淘汰|有人回你)/u.test(question);
 }
 
 export function directConversationReply(question) {
@@ -288,14 +296,15 @@ export function conversationalInput(question, rows, memberNames=new Map(), now=M
   const roast = question.match(/^(?:幫我)?叫(.{1,20}?)(?:別|不要)/u);
   const demonstration = /見識.*(?:實力|本事|能力)|(?:展示|秀出|秀一下|展現|露一手).*(?:實力|本事|能力|AI|IC)/iu.test(question);
   const termCorrection = /(?:^|[，,])(?:是|我說的是|我是指|我指的是|這裡指的是)\s*類比\s*IC[。!！?？\s]*$/iu.test(question);
-  const responseFeedback = /你(?:怎麼|為什麼|幹嘛).{0,12}(?:重複|跳針|罐頭)|你.{0,8}(?:一直|又|老是).{0,8}(?:重複|跳針)|(?:不要|別|停止).{0,8}(?:重複|跳針|罐頭)|(?:回覆|回答|內容).{0,8}(?:一樣|重複|罐頭)/u.test(question);
+  const responseFeedback = /你(?:怎麼|為什麼|幹嘛).{0,12}(?:重複|跳針|罐頭)|你.{0,8}(?:一直|又|老是).{0,8}(?:重複|跳針)|(?:不要|別|停止).{0,8}(?:重複|跳針|罐頭)|(?:回覆|回答|內容).{0,8}(?:一樣|重複|罐頭)|(?:你)?這樣(?:的)?(?:證明|回答|解釋).{0,12}(?:不夠|不足|沒說服力|沒回答|不太行)/u.test(question);
+  const capabilityDemo=/(?:為你自己|替你自己).{0,6}辯護|(?:證明|展示).{0,20}(?:你|自己).{0,12}(?:聰明|比\s*Meta)|(?:你|自己).{0,12}比\s*Meta.{0,12}聰明/iu.test(question);
   const award=question.match(/(?:頒(?:發)?|送)(?:個|一張)?(?:獎狀|獎牌)(?:給|予)(.{1,20}?)[！!。\s]*$/u);
   const address=question.trim().match(/^(?:請)?(?:幫我)?(?:叫|喊)\s*([^\n，。!?！？]{1,30}?)\s*一(?:聲|句)\s*[「『“"]?([^\n「」『』“”"，。!?！？]{1,16})[」』”"]?[。！!\s]*$/u);
   const knownMember=[...memberNames].find(([,name])=>[name,...name.split(/\s+/u)].some(alias=>alias.length>=2 && question.includes(alias)));
   const personMatch=question.match(/^(?:請問)?(.{2,20}?)(?:在(?:幹嘛|做什麼)|(?:說|講|貼)什麼|怎麼了)/u);
   const personQuestion=Boolean(personMatch);
   const target = (address?.[1] || cheer?.[1] || overtime?.[1] || roast?.[1] || award?.[1] || (personQuestion?knownMember?.[1] || personMatch[1]:'') || '').trim();
-  const intent = toneFeedback(question) ? 'tone_feedback' : responseFeedback ? 'response_feedback' : address ? 'playful_address' : award ? 'award' : personQuestion ? 'person_explanation' : cheer ? 'encouragement' : overtime ? 'unknown_overtime_reason' : roast ? 'roast' : demonstration ? 'demonstration' : termCorrection ? 'term_correction' : isAicDefinition(question) ? 'term_definition' : banterIntent(question) ? 'banter' : 'conversation';
+  const intent = toneFeedback(question) ? 'tone_feedback' : responseFeedback ? 'response_feedback' : capabilityDemo ? 'capability_demo' : address ? 'playful_address' : award ? 'award' : personQuestion ? 'person_explanation' : cheer ? 'encouragement' : overtime ? 'unknown_overtime_reason' : roast ? 'roast' : demonstration ? 'demonstration' : termCorrection ? 'term_correction' : isAicDefinition(question) ? 'term_definition' : banterIntent(question) ? 'banter' : 'conversation';
   const technical = engineeringTopic(question);
   const related = personQuestion ? chat.filter(row=>(knownMember && row.user_id===knownMember[0]) || row.text.includes(target)) : target && !award && !address ? chat.filter(row => row.text.includes(target)) : demonstration || termCorrection ? [] : technical ? chat.filter(row => engineeringTopic(row.text)) : chat;
   const weighted=weightedDiscussion(question,related,now,target,personQuestion?knownMember?.[0]:null);
@@ -334,6 +343,9 @@ function aicFallback(input, feedback=false) {
 export function conversationalReply(text, input) {
   const labels=new Map((input.participants || []).filter(p=>p.name).map(p=>[p.code,p.name]));
   let answer = revealCodes(text.trim(),labels).replace(/\bP\d+\b/g, '那位群友');
+  if(input.question && answer.startsWith(input.question) && /^\s*\n/u.test(answer.slice(input.question.length))){
+    const rest=answer.slice(input.question.length).trim();if(rest)answer=rest;
+  }
   const past = input.recent_bot_turns || [];
   if(input.reply_intent==='tone_feedback') return '收到，剛剛嘴過頭了。我會少講髒話，先把問題答清楚。';
   if(input.target_kind && /候選人|立委|議員|縣市長|替代方案|拉票/u.test(answer) &&
@@ -352,8 +364,10 @@ export function conversationalReply(text, input) {
     if(past.some(turn=>/調查日期：來源片段未提供|調查日期或方法沒附完整/u.test(turn.answer))) answer=answer.replace(/目前|現在/gu,'在那份調查中');
   }
   let budget=input.tone_mode==='restrained' ? 0 : input.profanity_budget ?? 0;
+  // Mentioning a word and using it to swear are different; don't leave empty quotations.
+  if(budget===0)answer=answer.replace(/([「『“"])(?:幹|靠北|靠杯)([」』”"])/gu,'$1粗口$2');
   answer=answer.replace(/^(?:幹|靠北|靠杯)[，,！!\s]+/u,'');
-  answer=answer.replace(/(?:靠北|靠杯|幹(?:你娘|他媽)?(?!嘛|部|線|活)|他媽的?|屁啦|是在供三小)[，,！!\s]*/gu,word=>budget-- > 0?word:'').trim();
+  answer=answer.replace(/(?:靠北|靠杯|幹(?:你娘|他媽)?(?!嘛|部|線|活|話)|他媽的?|屁啦|是在供三小)[，,！!\s]*/gu,word=>budget-- > 0?word:'').trim();
   if(!['banter','roast'].includes(input.reply_intent))answer=answer.replace(/(?:這還用問|這問題.{0,8}無聊)[？?！!。\s]*/gu,'').trim();
   const duplicates = past.some(turn=>nearlySameReply(turn.answer,answer));
   if (input.reply_intent === 'term_correction' && !/類比\s*IC|Analog\s*IC/iu.test(answer)) {
@@ -392,6 +406,44 @@ export function conversationalReply(text, input) {
     return '我沒辦法代你去問人啦 😂 把背景丟過來，我可以幫你想怎麼接話。';
   }
   return answer;
+}
+
+export function conversationIssues(answer,input,memberNames=new Map()) {
+  const issues=[];
+  if(/[「『“"]\s*[」』”"]/u.test(answer))issues.push('empty_quote');
+  if(!['banter','capability_demo','response_feedback'].includes(input.reply_intent))return issues;
+  const allowed=input.question;
+  const names=[...memberNames.values(),...(input.participants||[]).map(p=>p.name)].filter(Boolean);
+  if(names.some(name=>name!==input.requester_name && !allowed.includes(name) && answer.includes(name)))issues.push('wrong_person');
+  if(replyFingerprint(answer)===replyFingerprint(input.question) || /([\p{Script=Han}])\1{3,}/u.test(answer))issues.push('echo_instead_of_answer');
+  if(input.reply_intent==='response_feedback' && (input.recent_bot_turns||[]).some(turn=>nearlySameReply(answer,turn.answer)))issues.push('feedback_without_improvement');
+  if(input.reply_intent==='banter' && /(?:你|妳).{0,20}淘汰/u.test(input.question) && /我淘汰(?:完|你|他)/u.test(answer))issues.push('reversed_action');
+  if(/(?:我|已經).{0,16}(?:存進|存入|記進|寫入).{0,12}(?:資料庫|知識庫)/u.test(answer))issues.push('invented_storage_action');
+  if(/我(?:已(?:經)?|剛(?:剛|才))?.{0,16}(?:把群組|將群組|LINE).{0,10}(?:設定|設成|設為|改成|開啟|關閉)|我(?:已(?:經)?|剛(?:剛|才))?.{0,8}(?:設定|開啟|關閉).{0,10}(?:群組|自動回[覆復])/u.test(answer))issues.push('invented_group_action');
+  if(/我.{0,8}比\s*Meta\s*AI?.{0,8}(?:聰明|厲害|強)|我.{0,8}(?:贏過|打敗)\s*Meta/iu.test(answer) &&
+    !/不能(?:證明|保證)|無法(?:比較|證明)|不代表|沒有.{0,10}(?:比較|測試|證據)/u.test(answer))issues.push('unsupported_comparison');
+  if(names.some(name=>answer.includes(name) && new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}.{0,12}(?:說你|說過|說我|表示你)`,'u').test(answer)) &&
+    !input.question.includes('說'))issues.push('invented_attribution');
+  const ownSources=[input.question,input.requester_discussion||'',...(input.recent_bot_turns||[]).map(t=>t.question)].join('\n');
+  for(const match of answer.matchAll(/你(?:剛(?:剛|才)|之前|先前).{0,6}(?:討論|說過|說|貼|點了|吃了)([^。！？\n]{2,80})/gu)){
+    const subject=match[1];
+    const terms=[...subject.matchAll(/[\p{Script=Han}]{4,}/gu)].flatMap(([part])=>Array.from({length:part.length-3},(_,i)=>part.slice(i,i+4)));
+    terms.push(...(subject.match(/[A-Za-z][A-Za-z0-9_-]{2,}/g)||[]));
+    if(!terms.some(term=>ownSources.includes(term)))issues.push('invented_requester_history');
+  }
+  return [...new Set(issues)];
+}
+
+export function conversationFallback(input) {
+  const previous=(input.recent_bot_turns||[]).at(-1)?.question||'';
+  if(input.reply_intent==='capability_demo' || (input.reply_intent==='response_feedback' && /Meta|聰明|辯護/iu.test(previous)))
+    return '嘴上說贏 Meta 不算證據，拿解答驗收：理想反相放大器在線性負回授下，Rin=10 kΩ、Rf=100 kΩ，增益 −10，輸入20 mV就輸出 −200 mV；實作仍要檢查頻寬、擺幅和穩定度。這能驗證這題有沒有答對，不能證明我全面比較聰明。';
+  if(input.reply_intent==='banter'){
+    if(/滾|退群|下船/u.test(input.question))return '好啦，我先收斂。再標註我就好好接話，退場不用演三集 😎';
+    if(/有人回你/u.test(input.question))return '有啊，你現在就回我了。不過接错話算我的，這句不扯別人。';
+    return '先別急著拆機啦，我把亂接的垃圾話收回，下一題拿正事考我。';
+  }
+  return '你說得對，剛剛那段沒答好。我目前沒接出可靠的補答，不拿別人的話硬湊；把要補強的那一點點出來，我針對它答。';
 }
 
 export function requestedSearch(question) {
